@@ -15,6 +15,12 @@
     <Compile Remove="Test\**" />
     <EmbeddedResource Remove="Test\**" />
     <None Remove="Test\**" />
+    <Compile Remove="CosmoBroker.Benchmarks\**" />
+    <EmbeddedResource Remove="CosmoBroker.Benchmarks\**" />
+    <None Remove="CosmoBroker.Benchmarks\**" />
+    <Compile Remove="CosmoBroker.Server\**" />
+    <EmbeddedResource Remove="CosmoBroker.Server\**" />
+    <None Remove="CosmoBroker.Server\**" />
   </ItemGroup>
 
   <ItemGroup>
