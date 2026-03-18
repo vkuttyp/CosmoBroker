@@ -1,18 +1,19 @@
 using System;
 using System.Collections.Generic;
 
-namespace CosmoBroker.JetStream
+namespace CosmoBroker.JetStream.Models
 {
-    public class Stream
+    public class JetStreamEntity
     {
         public string Name { get; set; }
         public string SubjectPattern { get; set; }
         public long LastSequence { get; private set; } = 0;
         public int MaxMessages { get; set; } = 1000;
+
         public List<StreamMessage> Messages { get; } = new();
         public List<Consumer> Consumers { get; } = new();
 
-        public Stream(string name, string subjectPattern)
+        public JetStreamEntity(string name, string subjectPattern)
         {
             Name = name;
             SubjectPattern = subjectPattern;
@@ -21,6 +22,7 @@ namespace CosmoBroker.JetStream
         public StreamMessage AddMessage(string subject, byte[] payload)
         {
             LastSequence++;
+
             var msg = new StreamMessage
             {
                 Sequence = LastSequence,
@@ -28,9 +30,10 @@ namespace CosmoBroker.JetStream
                 Payload = payload,
                 Timestamp = DateTime.UtcNow
             };
+
             Messages.Add(msg);
 
-            // Enforce max messages retention
+            // Retention
             if (Messages.Count > MaxMessages)
                 Messages.RemoveRange(0, Messages.Count - MaxMessages);
 

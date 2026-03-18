@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("CosmoBroker")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e8078c92922b2594458b3c9ffcaf5b5d483ca959")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+4d55bf6b6ae0818edcefaedf8b1b0bbfa039de18")]
 [assembly: System.Reflection.AssemblyProductAttribute("CosmoBroker")]
 [assembly: System.Reflection.AssemblyTitleAttribute("CosmoBroker")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

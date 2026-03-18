@@ -1,12 +1,7 @@
 {
   "Version": 1,
   "WorkspaceRootPath": "C:\\Mac\\Home\\dev\\CosmoBroker\\",
-  "Documents": [
-    {
-      "AbsoluteMoniker": "D:0:0:{F790F803-2471-E266-4C5B-CF42A300630C}|CosmoBroker.csproj|c:\\mac\\home\\dev\\cosmobroker\\cosmobroker.csproj||{FA3CD31E-987B-443A-9B81-186104E8DAC1}|",
-      "RelativeMoniker": "D:0:0:{F790F803-2471-E266-4C5B-CF42A300630C}|CosmoBroker.csproj|solutionrelative:cosmobroker.csproj||{FA3CD31E-987B-443A-9B81-186104E8DAC1}|"
-    }
-  ],
+  "Documents": [],
   "DocumentGroupContainers": [
     {
       "Orientation": 0,
@@ -14,24 +9,11 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 1,
+          "SelectedChildIndex": -1,
           "Children": [
             {
               "$type": "Bookmark",
               "Name": "ST:0:0:{aa2115a1-9712-457b-9047-dbb71ca2cdd2}"
-            },
-            {
-              "$type": "Document",
-              "DocumentIndex": 0,
-              "Title": "CosmoBroker",
-              "DocumentMoniker": "C:\\Mac\\Home\\dev\\CosmoBroker\\CosmoBroker.csproj",
-              "RelativeDocumentMoniker": "CosmoBroker.csproj",
-              "ToolTip": "C:\\Mac\\Home\\dev\\CosmoBroker\\CosmoBroker.csproj",
-              "RelativeToolTip": "CosmoBroker.csproj",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAowA0AAAAAAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000758|",
-              "WhenOpened": "2026-03-18T15:46:19.898Z",
-              "EditorCaption": ""
             }
           ]
         }
