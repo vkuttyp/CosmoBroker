@@ -15,18 +15,33 @@ public class SimpleAuthenticator : IAuthenticator
         _token = token;
     }
 
-    public Task<bool> AuthenticateAsync(ConnectOptions options)
+    public Task<AuthResult> AuthenticateAsync(ConnectOptions options)
     {
+        bool success = false;
+        string? user = options.User;
+
         if (!string.IsNullOrEmpty(_token))
         {
-            return Task.FromResult(options.AuthToken == _token);
+            success = options.AuthToken == _token;
         }
-
-        if (!string.IsNullOrEmpty(_user))
+        else if (!string.IsNullOrEmpty(_user))
         {
-            return Task.FromResult(options.User == _user && options.Pass == _pass);
+            success = options.User == _user && options.Pass == _pass;
+        }
+        else
+        {
+            success = true; // No auth required
         }
 
-        return Task.FromResult(true); // No auth required
+        if (!success)
+        {
+            return Task.FromResult(new AuthResult { Success = false, ErrorMessage = "Authentication failed" });
+        }
+
+        // Return a default account and user if successful
+        var account = new Account { Name = "default", SubjectPrefix = null };
+        var authUser = new User { Name = user ?? "anonymous", AccountName = "default" };
+
+        return Task.FromResult(new AuthResult { Success = true, Account = account, User = authUser });
     }
 }

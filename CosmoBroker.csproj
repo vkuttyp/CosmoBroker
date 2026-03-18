@@ -3,7 +3,20 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <Version>1.0.1</Version>
+    <Authors>Kutty</Authors>
+    <Description>High-performance, NATS-compatible distributed messaging engine with native SQL persistence.</Description>
+    <PackageProjectUrl>https://github.com/vkuttyp/CosmoBroker</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/vkuttyp/CosmoBroker</RepositoryUrl>
+    <PackageTags>nats;messaging;broker;jetstream;mqtt;websocket;sql;persistence</PackageTags>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="Test\**" />
+    <EmbeddedResource Remove="Test\**" />
+    <None Remove="Test\**" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Cosmo.Transport" Version="1.0.2" />
     <PackageReference Include="CosmoSQLClient.Core" Version="1.9.21" />

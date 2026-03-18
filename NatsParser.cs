@@ -9,9 +9,19 @@ public static class NatsParser
     public static void ParseCommand(BrokerConnection connection, ReadOnlySequence<byte> line, ref ReadOnlySequence<byte> fullBuffer, out bool msgParsed)
     {
         msgParsed = false;
-        string commandStr = Encoding.UTF8.GetString(line).TrimEnd('\r');
-        if (string.IsNullOrWhiteSpace(commandStr)) return;
+        if (line.IsEmpty) return;
 
+        var lineSpan = line.IsSingleSegment ? line.FirstSpan : line.ToArray().AsSpan();
+        if (lineSpan.Length < 3) return;
+
+        // Command detection via Span (case insensitive) to avoid allocations for common commands
+        if (StartsWith(lineSpan, "PING")) { connection.HandlePing(); return; }
+        if (StartsWith(lineSpan, "PONG")) { return; }
+        if (StartsWith(lineSpan, "INFO")) { _ = connection.SendInfo(); return; }
+
+        // ARGUMENT PARSING OPTIMIZATION: Use Span-based splitting
+        // NATS commands are space-separated
+        string commandStr = Encoding.UTF8.GetString(lineSpan).TrimEnd('\r');
         var parts = commandStr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0) return;
 
@@ -19,16 +29,10 @@ public static class NatsParser
 
         switch (verb)
         {
-            case "PING":
-                connection.HandlePing();
-                break;
-                
             case "SUB":
                 if (parts.Length >= 3)
                 {
                     // Standard NATS: SUB <subject> [queue group] <sid>
-                    // Our extension: [durable name] at the end
-                    
                     string subject = parts[1];
                     string sid;
                     string? queueGroup = null;
@@ -36,13 +40,10 @@ public static class NatsParser
 
                     if (parts.Length == 3)
                     {
-                        // SUB <subject> <sid>
                         sid = parts[2];
                     }
                     else if (parts.Length == 4)
                     {
-                        // SUB <subject> <group> <sid>  OR  SUB <subject> <sid> <durable>
-                        // We'll assume if the 3rd part is numeric, it's an SID
                         if (int.TryParse(parts[2], out _)) {
                             sid = parts[2];
                             durable = parts[3];
@@ -53,32 +54,35 @@ public static class NatsParser
                     }
                     else
                     {
-                        // SUB <subject> <group> <sid> <durable>
                         queueGroup = parts[2];
                         sid = parts[3];
                         durable = parts[4];
                     }
 
-                    connection.HandleSub(subject, sid, queueGroup, durable);
+                    connection.HandleSub(subject, sid, queueGroup, durable, isRemote: connection.IsRoute);
                 }
                 break;
 
             case "UNSUB":
                 if (parts.Length >= 2)
                 {
-                    // UNSUB <sid> [max_msgs]
                     string sid = parts[1];
-                    connection.HandleUnsub(sid);
+                    int? maxMsgs = null;
+                    if (parts.Length == 3 && int.TryParse(parts[2], out int m))
+                    {
+                        maxMsgs = m;
+                    }
+                    connection.HandleUnsub(sid, maxMsgs);
                 }
                 break;
 
             case "PUB":
-                // Handled in BrokerConnection.cs for payload framing
+            case "HPUB":
+                // Handled in fast-path in BrokerConnection.cs
                 break;
                 
             case "CONNECT":
                 {
-                    // CONNECT { "option": value, ... }
                     int firstBrace = commandStr.IndexOf('{');
                     if (firstBrace != -1)
                     {
@@ -96,5 +100,18 @@ public static class NatsParser
                 }
                 break;
         }
+    }
+
+    private static bool StartsWith(ReadOnlySpan<byte> span, string verb)
+    {
+        if (span.Length < verb.Length) return false;
+        for (int i = 0; i < verb.Length; i++)
+        {
+            byte b = span[i];
+            char c = verb[i];
+            // Case-insensitive ASCII check
+            if (b != c && b != (c + 32) && b != (c - 32)) return false; 
+        }
+        return span.Length == verb.Length || span[verb.Length] == ' ' || span[verb.Length] == '\r';
     }
 }

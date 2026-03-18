@@ -25,13 +25,19 @@ public class MessageRepository
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 subject     TEXT NOT NULL,
                 payload     BLOB NOT NULL,
+                stream_name TEXT,
                 created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS mq_consumers (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                name        TEXT NOT NULL UNIQUE,
+                name        TEXT PRIMARY KEY,
                 subject     TEXT NOT NULL,
+                stream_name TEXT,
                 last_msg_id INTEGER DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS mq_streams (
+                name        TEXT PRIMARY KEY,
+                subjects    TEXT NOT NULL,
+                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS mq_users (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,7 +45,8 @@ public class MessageRepository
                 password    TEXT NOT NULL,
                 token       TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_mq_messages_subject ON mq_messages(subject);";
+            CREATE INDEX IF NOT EXISTS idx_mq_messages_subject ON mq_messages(subject);
+            CREATE INDEX IF NOT EXISTS idx_mq_messages_stream ON mq_messages(stream_name);";
 
         var statements = schema.Split(';', StringSplitOptions.RemoveEmptyEntries);
         foreach (var stmt in statements)
@@ -55,7 +62,7 @@ public class MessageRepository
             new[] {
                 SqlParameter.Named("u", SqlValue.From(username)),
                 SqlParameter.Named("p", SqlValue.From(password)),
-                SqlParameter.Named("t", SqlValue.From(token))
+                SqlParameter.Named("t", SqlValue.From(token ?? string.Empty))
             }, ct: ct);
     }
 
@@ -133,6 +140,63 @@ public class MessageRepository
                 SqlParameter.Named("id", SqlValue.From(lastId))
             }, ct: ct);
     }
+
+    // JetStream Persistence
+    public async Task SaveStreamAsync(string name, string subjects, CancellationToken ct = default)
+    {
+        await _db.ExecuteAsync(
+            "INSERT INTO mq_streams (name, subjects) VALUES (@name, @subjects) " +
+            "ON CONFLICT(name) DO UPDATE SET subjects = excluded.subjects",
+            new[] {
+                SqlParameter.Named("name", SqlValue.From(name)),
+                SqlParameter.Named("subjects", SqlValue.From(subjects))
+            }, ct: ct);
+    }
+
+    public async Task<List<PersistedStream>> GetStreamsAsync(CancellationToken ct = default)
+    {
+        var rows = await _db.QueryAsync("SELECT name, subjects FROM mq_streams", ct: ct);
+        return rows.Select(r => new PersistedStream {
+            Name = r["name"].AsString() ?? string.Empty,
+            Subjects = r["subjects"].AsString() ?? string.Empty
+        }).ToList();
+    }
+
+    public async Task<long> SaveJetStreamMessageAsync(string streamName, string subject, byte[] payload, CancellationToken ct = default)
+    {
+        await _db.ExecuteAsync(
+            "INSERT INTO mq_messages (subject, payload, stream_name) VALUES (@subject, @payload, @stream)",
+            new[] { 
+                SqlParameter.Named("subject", SqlValue.From(subject)),
+                SqlParameter.Named("payload", SqlValue.From(payload)),
+                SqlParameter.Named("stream", SqlValue.From(streamName))
+            }, ct: ct);
+        
+        var rows = await _db.QueryAsync("SELECT last_insert_rowid() as id", ct: ct);
+        return rows[0]["id"].AsInt() ?? 0;
+    }
+
+    public async Task<List<PersistedMessage>> GetJetStreamMessagesAsync(string streamName, long startAfterId, int limit = 100, CancellationToken ct = default)
+    {
+        var query = "SELECT id, subject, payload FROM mq_messages WHERE stream_name = @stream AND id > @id ORDER BY id ASC LIMIT @limit";
+        var rows = await _db.QueryAsync(query, new[] {
+            SqlParameter.Named("stream", SqlValue.From(streamName)),
+            SqlParameter.Named("id", SqlValue.From(startAfterId)),
+            SqlParameter.Named("limit", SqlValue.From(limit))
+        }, ct: ct);
+
+        return rows.Select(row => new PersistedMessage {
+            Id = row["id"].AsInt() ?? 0,
+            Subject = row["subject"].AsString() ?? string.Empty,
+            Payload = row["payload"].AsBytes() ?? Array.Empty<byte>()
+        }).ToList();
+    }
+}
+
+public class PersistedStream
+{
+    public required string Name { get; set; }
+    public required string Subjects { get; set; }
 }
 
 public class PersistedMessage

@@ -1,0 +1,36 @@
+name: CosmoBroker CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Restore dependencies
+      run: |
+        dotnet restore CosmoBroker.csproj
+        dotnet restore CosmoBroker.Server/CosmoBroker.Server.csproj
+        dotnet restore CosmoBroker.Benchmarks/CosmoBroker.Benchmarks.csproj
+        dotnet restore Test/Tests.csproj
+
+    - name: Build
+      run: |
+        dotnet build CosmoBroker.csproj --no-restore -c Release
+        dotnet build CosmoBroker.Server/CosmoBroker.Server.csproj --no-restore -c Release
+        dotnet build CosmoBroker.Benchmarks/CosmoBroker.Benchmarks.csproj --no-restore -c Release
+        dotnet build Test/Tests.csproj --no-restore -c Release
+
+    - name: Run Tests
+      run: dotnet test Test/Tests.csproj --no-build -c Release --logger "console;verbosity=detailed"

@@ -13,6 +13,15 @@ public class ConnectOptions
     [JsonPropertyName("auth_token")]
     public string? AuthToken { get; set; }
 
+    [JsonPropertyName("jwt")]
+    public string? Jwt { get; set; }
+
+    [JsonPropertyName("nkey")]
+    public string? Nkey { get; set; }
+
+    [JsonPropertyName("sig")]
+    public string? Sig { get; set; }
+
     [JsonPropertyName("verbose")]
     public bool Verbose { get; set; }
 

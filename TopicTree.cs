@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
+using System;
 
 namespace CosmoBroker;
 
@@ -7,11 +9,11 @@ public class TopicTree
 {
     private class TopicNode
     {
-        // Individual subscribers: SID -> Connection
-        public ConcurrentDictionary<string, BrokerConnection> Subscribers { get; } = new();
+        // Individual subscribers: SID -> Connection Set
+        public ConcurrentDictionary<string, ConcurrentDictionary<BrokerConnection, byte>> Subscribers { get; } = new();
         
-        // Queue Groups: GroupName -> { SID -> Connection }
-        public ConcurrentDictionary<string, ConcurrentDictionary<string, BrokerConnection>> QueueGroups { get; } = new();
+        // Queue Groups: GroupName -> { SID -> Connection Set }
+        public ConcurrentDictionary<string, ConcurrentDictionary<string, ConcurrentDictionary<BrokerConnection, byte>>> QueueGroups { get; } = new();
 
         // Child nodes (e.g., "foo" -> "bar" for "foo.bar")
         public ConcurrentDictionary<string, TopicNode> Children { get; } = new();
@@ -32,12 +34,14 @@ public class TopicTree
 
         if (string.IsNullOrEmpty(queueGroup))
         {
-            current.Subscribers[sid] = connection;
+            var set = current.Subscribers.GetOrAdd(sid, _ => new ConcurrentDictionary<BrokerConnection, byte>());
+            set[connection] = 0;
         }
         else
         {
-            var group = current.QueueGroups.GetOrAdd(queueGroup, _ => new ConcurrentDictionary<string, BrokerConnection>());
-            group[sid] = connection;
+            var group = current.QueueGroups.GetOrAdd(queueGroup, _ => new ConcurrentDictionary<string, ConcurrentDictionary<BrokerConnection, byte>>());
+            var set = group.GetOrAdd(sid, _ => new ConcurrentDictionary<BrokerConnection, byte>());
+            set[connection] = 0;
         }
     }
 
@@ -48,91 +52,107 @@ public class TopicTree
 
         foreach (var part in parts)
         {
-            if (!current.Children.TryGetValue(part, out current))
-            {
-                return; // Node not found
-            }
+            if (!current.Children.TryGetValue(part, out current)) return;
         }
 
         if (string.IsNullOrEmpty(queueGroup))
         {
-            current.Subscribers.TryRemove(sid, out _);
+            if (current.Subscribers.TryGetValue(sid, out var set))
+            {
+                set.TryRemove(connection, out _);
+                if (set.IsEmpty) current.Subscribers.TryRemove(sid, out _);
+            }
         }
         else
         {
             if (current.QueueGroups.TryGetValue(queueGroup, out var group))
             {
-                group.TryRemove(sid, out _);
+                if (group.TryGetValue(sid, out var set))
+                {
+                    set.TryRemove(connection, out _);
+                    if (set.IsEmpty) group.TryRemove(sid, out _);
+                }
                 if (group.IsEmpty) current.QueueGroups.TryRemove(queueGroup, out _);
             }
         }
     }
 
-    public void Publish(string subject, System.Buffers.ReadOnlySequence<byte> payload)
+    public void Publish(string subject, System.Buffers.ReadOnlySequence<byte> payload, string? replyTo = null, BrokerConnection? source = null)
     {
-        var parts = subject.Split('.');
-        MatchAndPublish(_root, parts, 0, subject, payload);
+        PublishWithTTL(subject, payload, replyTo, null, source);
     }
 
-    private void MatchAndPublish(TopicNode node, string[] parts, int index, string originalSubject, System.Buffers.ReadOnlySequence<byte> payload)
+    public void PublishWithTTL(string subject, System.Buffers.ReadOnlySequence<byte> payload, string? replyTo = null, TimeSpan? ttl = null, BrokerConnection? source = null)
     {
-        if (index == parts.Length)
+        ReadOnlySpan<char> span = subject.AsSpan();
+        MatchAndPublish(_root, span, subject, payload, replyTo, ttl, source);
+    }
+
+    private void MatchAndPublish(TopicNode node, ReadOnlySpan<char> remaining, string originalSubject, System.Buffers.ReadOnlySequence<byte> payload, string? replyTo = null, TimeSpan? ttl = null, BrokerConnection? source = null)
+    {
+        if (node.Children.TryGetValue(">", out var chevronNode))
         {
-            // 1. Direct subscribers (fan-out to ALL)
-            foreach (var sub in node.Subscribers)
-            {
-                sub.Value.SendMessage(originalSubject, sub.Key, payload);
-            }
+            DeliverToNode(chevronNode, originalSubject, payload, replyTo, ttl, source);
+        }
 
-            // 2. Queue groups (load-balance: pick ONE per group)
-            foreach (var groupEntry in node.QueueGroups)
-            {
-                var group = groupEntry.Value;
-                if (group.IsEmpty) continue;
-
-                var members = group.ToArray();
-                if (members.Length > 0)
-                {
-                    var pick = members[_random.Next(members.Length)];
-                    pick.Value.SendMessage(originalSubject, pick.Key, payload);
-                }
-            }
+        int dotIdx = remaining.IndexOf('.');
+        if (dotIdx == -1)
+        {
+            string lastPart = remaining.ToString();
+            if (node.Children.TryGetValue(lastPart, out var literalNode))
+                DeliverToNode(literalNode, originalSubject, payload, replyTo, ttl, source);
+            if (node.Children.TryGetValue("*", out var starNode))
+                DeliverToNode(starNode, originalSubject, payload, replyTo, ttl, source);
             return;
         }
 
-        string part = parts[index];
+        string part = remaining.Slice(0, dotIdx).ToString();
+        ReadOnlySpan<char> nextRemaining = remaining.Slice(dotIdx + 1);
 
-        // 1. Literal match
-        if (node.Children.TryGetValue(part, out var literalNode))
-        {
-            MatchAndPublish(literalNode, parts, index + 1, originalSubject, payload);
-        }
+        if (node.Children.TryGetValue(part, out var nextLiteral))
+            MatchAndPublish(nextLiteral, nextRemaining, originalSubject, payload, replyTo, ttl, source);
 
-        // 2. Single token wildcard match (*)
-        if (node.Children.TryGetValue("*", out var starNode))
-        {
-            MatchAndPublish(starNode, parts, index + 1, originalSubject, payload);
-        }
+        if (node.Children.TryGetValue("*", out var nextStar))
+            MatchAndPublish(nextStar, nextRemaining, originalSubject, payload, replyTo, ttl, source);
+    }
 
-        // 3. Multi token wildcard match (>)
-        if (node.Children.TryGetValue(">", out var chevronNode))
+    private void DeliverToNode(TopicNode node, string originalSubject, System.Buffers.ReadOnlySequence<byte> payload, string? replyTo, TimeSpan? ttl, BrokerConnection? source)
+    {
+        foreach (var sub in node.Subscribers)
         {
-            // Fan out to all subscribers at the chevron node
-            foreach (var sub in chevronNode.Subscribers)
+            foreach (var conn in sub.Value.Keys)
             {
-                sub.Value.SendMessage(originalSubject, sub.Key, payload);
+                if (conn == source) continue;
+                conn.SendMessageWithTTL(originalSubject, sub.Key, payload, replyTo, ttl);
             }
-            // Load balance to groups at the chevron node
-            foreach (var groupEntry in chevronNode.QueueGroups)
+        }
+
+        foreach (var groupEntry in node.QueueGroups)
+        {
+            var group = groupEntry.Value;
+            if (group.IsEmpty) continue;
+            var members = group.ToArray();
+            if (members.Length > 0)
             {
-                var group = groupEntry.Value;
-                var members = group.ToArray();
-                if (members.Length > 0)
+                var pickSidEntry = members[_random.Next(members.Length)];
+                var conns = pickSidEntry.Value.Keys.ToArray();
+                if (conns.Length > 0)
                 {
-                    var pick = members[_random.Next(members.Length)];
-                    pick.Value.SendMessage(originalSubject, pick.Key, payload);
+                    var pick = conns[_random.Next(conns.Length)];
+                    if (pick != source) pick.SendMessageWithTTL(originalSubject, pickSidEntry.Key, payload, replyTo, ttl);
                 }
             }
         }
+    }
+
+    public bool HasSubscribers(string subject)
+    {
+        var parts = subject.Split('.');
+        var current = _root;
+        foreach (var part in parts)
+        {
+            if (!current.Children.TryGetValue(part, out current)) return false;
+        }
+        return current.Subscribers.Count > 0 || current.QueueGroups.Count > 0;
     }
 }

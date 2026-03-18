@@ -1,45 +1,26 @@
 {
   "format": 1,
   "restore": {
-    "C:\\Mac\\Home\\dev\\CosmoBroker\\CosmoBroker.csproj": {}
+    "/Users/kutty/dev/CosmoBroker/CosmoBroker.csproj": {}
   },
   "projects": {
-    "C:\\Mac\\Home\\dev\\CosmoBroker\\CosmoBroker.csproj": {
-      "version": "1.0.0",
+    "/Users/kutty/dev/CosmoBroker/CosmoBroker.csproj": {
+      "version": "1.0.1",
       "restore": {
-        "projectUniqueName": "C:\\Mac\\Home\\dev\\CosmoBroker\\CosmoBroker.csproj",
+        "projectUniqueName": "/Users/kutty/dev/CosmoBroker/CosmoBroker.csproj",
         "projectName": "CosmoBroker",
-        "projectPath": "C:\\Mac\\Home\\dev\\CosmoBroker\\CosmoBroker.csproj",
-        "packagesPath": "C:\\Users\\kutty\\.nuget\\packages\\",
-        "outputPath": "C:\\Mac\\Home\\dev\\CosmoBroker\\obj\\",
+        "projectPath": "/Users/kutty/dev/CosmoBroker/CosmoBroker.csproj",
+        "packagesPath": "/Users/kutty/.nuget/packages/",
+        "outputPath": "/Users/kutty/dev/CosmoBroker/obj/",
         "projectStyle": "PackageReference",
-        "fallbackFolders": [
-          "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
-        ],
         "configFilePaths": [
-          "C:\\Users\\kutty\\AppData\\Roaming\\NuGet\\NuGet.Config",
-          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
-          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+          "/Users/kutty/.nuget/NuGet/NuGet.Config"
         ],
         "originalTargetFrameworks": [
           "net10.0"
         ],
         "sources": {
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastCube .NET Professional\\Nuget": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastCube .NET Trial\\Nuget": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastReport .NET Avalonia Pack Trial\\Nugets": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastReport .NET Avalonia Source Code\\Nugets": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastReport .NET Mono Pack Trial\\Nugets": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastReport .NET Mono Source Code\\Nugets": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastReport .NET WEB Source Code\\Nugets": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastReport .NET WEB Trial\\Nugets": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastReport .NET WPF Pack Trial\\Nugets": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastReport .NET WPF Source Code\\Nugets": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastReport .NET WinForms Pack Trial\\Nugets": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastReport .NET WinForms Source Code\\Nugets": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastReport Business Graphics .NET Professional\\Nuget": {},
-          "C:\\Program Files (x86)\\Fast Reports\\.NET\\2026.1.2\\FastReport Business Graphics .NET Trial\\Nuget": {},
-          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "/usr/local/share/dotnet/library-packs": {},
           "https://api.nuget.org/v3/index.json": {}
         },
         "frameworks": {
@@ -58,7 +39,7 @@
           "auditLevel": "low",
           "auditMode": "all"
         },
-        "SdkAnalysisLevel": "10.0.200"
+        "SdkAnalysisLevel": "10.0.100"
       },
       "frameworks": {
         "net10.0": {
@@ -93,7 +74,7 @@
               "privateAssets": "all"
             }
           },
-          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.201/PortableRuntimeIdentifierGraph.json",
+          "runtimeIdentifierGraphPath": "/usr/local/share/dotnet/sdk/10.0.101/PortableRuntimeIdentifierGraph.json",
           "packagesToPrune": {
             "Microsoft.CSharp": "(,4.7.32767]",
             "Microsoft.VisualBasic": "(,10.4.32767]",
