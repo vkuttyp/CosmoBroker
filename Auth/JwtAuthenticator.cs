@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using NATS.NKeys;
+using System.Collections.Concurrent;
 
 namespace CosmoBroker.Auth;
 
@@ -16,10 +17,20 @@ public class JwtAuthenticator : IAuthenticator
     // The nonce sent to the client in the INFO block.
     // The client signs this nonce using their NKEY private key.
     private readonly string _serverNonce;
+    private readonly ConcurrentDictionary<string, string> _accountJwts = new();
+    private readonly string? _operatorPublicKey;
 
-    public JwtAuthenticator(string serverNonce = "secure_nonce_12345")
+    public JwtAuthenticator(string serverNonce = "secure_nonce_12345", string? operatorPublicKey = null, string? operatorJwt = null)
     {
         _serverNonce = serverNonce;
+        if (!string.IsNullOrWhiteSpace(operatorPublicKey))
+        {
+            _operatorPublicKey = operatorPublicKey;
+        }
+        else if (!string.IsNullOrWhiteSpace(operatorJwt))
+        {
+            _operatorPublicKey = ExtractOperatorPublicKey(operatorJwt);
+        }
     }
 
     public Task<AuthResult> AuthenticateAsync(ConnectOptions options)
@@ -46,17 +57,10 @@ public class JwtAuthenticator : IAuthenticator
         {
             try
             {
-                var parts = options.Jwt.Split('.');
-                if (parts.Length != 3) throw new Exception("Invalid JWT format");
-
-                // Parse the payload
-                string payloadJson = Encoding.UTF8.GetString(Base64UrlDecode(parts[1]));
-                using var doc = JsonDocument.Parse(payloadJson);
-                var root = doc.RootElement;
-
-                // NATS JWTs contain standard claims like 'sub' (User NKEY) and 'iss' (Account NKEY)
-                string? sub = root.TryGetProperty("sub", out var s) ? s.GetString() : "unknown-user";
-                string? iss = root.TryGetProperty("iss", out var i) ? i.GetString() : "unknown-account";
+                var (root, sub, iss) = ParseJwtPayload(options.Jwt);
+                if (string.IsNullOrWhiteSpace(sub) || string.IsNullOrWhiteSpace(iss))
+                    throw new Exception("JWT missing required claims");
+                ValidateJwtTimeClaims(root);
                 
                 // Advanced NATS JWTs contain a 'nats' claim object with permissions
                 Account account = new Account { Name = iss ?? "jwt-account", SubjectPrefix = null };
@@ -98,6 +102,29 @@ public class JwtAuthenticator : IAuthenticator
                         return Task.FromResult(new AuthResult { Success = false, ErrorMessage = "Invalid JWT token signature" });
                     }
                 }
+
+                // Full chain validation: Account JWT signed by Operator
+                if (string.IsNullOrWhiteSpace(_operatorPublicKey))
+                    return Task.FromResult(new AuthResult { Success = false, ErrorMessage = "Operator public key not configured" });
+
+                var accountKey = iss!;
+                if (!_accountJwts.TryGetValue(accountKey, out var accountJwt))
+                    return Task.FromResult(new AuthResult { Success = false, ErrorMessage = $"Account JWT not registered for {iss}" });
+
+                var (acctRoot, acctSub, acctIss) = ParseJwtPayload(accountJwt);
+                if (string.IsNullOrWhiteSpace(acctSub) || string.IsNullOrWhiteSpace(acctIss))
+                    return Task.FromResult(new AuthResult { Success = false, ErrorMessage = "Account JWT missing required claims" });
+
+                ValidateJwtTimeClaims(acctRoot);
+
+                if (!string.Equals(acctSub, accountKey, StringComparison.Ordinal))
+                    return Task.FromResult(new AuthResult { Success = false, ErrorMessage = "Account JWT subject mismatch" });
+
+                if (!string.Equals(acctIss, _operatorPublicKey, StringComparison.Ordinal))
+                    return Task.FromResult(new AuthResult { Success = false, ErrorMessage = "Account JWT issuer mismatch" });
+
+                if (!VerifyJwtSignature(accountJwt, _operatorPublicKey))
+                    return Task.FromResult(new AuthResult { Success = false, ErrorMessage = "Invalid Account JWT signature" });
 
                 return Task.FromResult(new AuthResult { Success = true, Account = account, User = user });
             }
@@ -167,6 +194,31 @@ public class JwtAuthenticator : IAuthenticator
         return Convert.FromBase64String(base64);
     }
 
+    private static (JsonElement Root, string? Sub, string? Iss) ParseJwtPayload(string jwt)
+    {
+        var parts = jwt.Split('.');
+        if (parts.Length != 3) throw new Exception("Invalid JWT format");
+        string payloadJson = Encoding.UTF8.GetString(Base64UrlDecode(parts[1]));
+        using var doc = JsonDocument.Parse(payloadJson);
+        var root = doc.RootElement.Clone();
+        string? sub = root.TryGetProperty("sub", out var s) ? s.GetString() : null;
+        string? iss = root.TryGetProperty("iss", out var i) ? i.GetString() : null;
+        return (root, sub, iss);
+    }
+
+    private static void ValidateJwtTimeClaims(JsonElement root)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (root.TryGetProperty("nbf", out var nbf) && nbf.ValueKind == JsonValueKind.Number)
+        {
+            if (nbf.GetInt64() > now) throw new Exception("JWT not valid yet");
+        }
+        if (root.TryGetProperty("exp", out var exp) && exp.ValueKind == JsonValueKind.Number)
+        {
+            if (exp.GetInt64() <= now) throw new Exception("JWT expired");
+        }
+    }
+
     private static byte[] DecodeBase64Any(string input)
     {
         // Accept both base64 and base64url encodings.
@@ -191,5 +243,28 @@ public class JwtAuthenticator : IAuthenticator
         {
             return false;
         }
+    }
+
+    public void RegisterAccountJwt(string accountJwt)
+    {
+        var (_, sub, _) = ParseJwtPayload(accountJwt);
+        if (string.IsNullOrWhiteSpace(sub)) throw new ArgumentException("Account JWT missing subject", nameof(accountJwt));
+        _accountJwts[sub] = accountJwt;
+    }
+
+    public void RegisterAccountJwt(string accountPublicKey, string accountJwt)
+    {
+        _accountJwts[accountPublicKey] = accountJwt;
+    }
+
+    private static string? ExtractOperatorPublicKey(string operatorJwt)
+    {
+        var (root, sub, iss) = ParseJwtPayload(operatorJwt);
+        ValidateJwtTimeClaims(root);
+        if (!string.IsNullOrWhiteSpace(sub) && VerifyJwtSignature(operatorJwt, sub))
+            return sub;
+        if (!string.IsNullOrWhiteSpace(iss) && VerifyJwtSignature(operatorJwt, iss))
+            return iss;
+        return null;
     }
 }
