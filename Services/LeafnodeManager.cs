@@ -87,6 +87,7 @@ public class LeafnodeManager
 
                 // Leafnode connection acts as a NATS client (no server INFO push)
                 var connection = new BrokerConnection(stream, hub.ToString(), _topicTree, null, null, null, _server, sendInfoOnConnect: false);
+                connection.IsLeaf = true;
                 _connections[hub] = connection;
 
                 Console.WriteLine($"[Leafnode] Connected to hub {hub}");
@@ -126,6 +127,14 @@ public class LeafnodeManager
         foreach (var conn in _connections.Values)
         {
             _ = conn.SendRawAsync($"SUB {subject} {sid}\r\n");
+        }
+    }
+
+    public void NotifyLocalUnsub(string sid)
+    {
+        foreach (var conn in _connections.Values)
+        {
+            _ = conn.SendRawAsync($"UNSUB {sid}\r\n");
         }
     }
 }

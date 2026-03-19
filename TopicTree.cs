@@ -125,6 +125,7 @@ public class TopicTree
             foreach (var conn in sub.Value.Keys)
             {
                 if (conn == source && source?.NoEcho == true) continue;
+                if (source != null && (source.IsRoute || source.IsLeaf) && (conn.IsRoute || conn.IsLeaf)) continue;
                 conn.SendMessageWithTTL(originalSubject, sub.Key, payload, replyTo, ttl);
             }
         }
@@ -160,6 +161,7 @@ public class TopicTree
                     sourcePresent = true;
                     if (source?.NoEcho == true) continue;
                 }
+                if (source != null && (source.IsRoute || source.IsLeaf) && (entry.Conn.IsRoute || entry.Conn.IsLeaf)) continue;
                 selected = entry;
                 break;
             }

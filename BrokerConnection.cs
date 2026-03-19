@@ -41,6 +41,7 @@ public class BrokerConnection
     private bool _isAuthenticated = false;
     private bool _certAuthenticated = false;
     public bool IsRoute { get; set; } = false;
+    public bool IsLeaf { get; set; } = false;
     public Auth.Account? Account { get; private set; }
     public Auth.User? User { get; private set; }
     public bool SupportsHeaders { get; set; } = true;
@@ -233,6 +234,44 @@ public class BrokerConnection
                             HandlePing();
                             buffer = buffer.Slice(buffer.GetPosition(1, linePosition.Value));
                             continue;
+                        }
+
+                        if ((lineSpan[0] | 0x20) == 'm' && (IsRoute || IsLeaf))
+                        {
+                            string lineStr = Encoding.UTF8.GetString(lineSpan).TrimEnd('\r');
+                            var parts = lineStr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                            if (parts.Length > 0 && (parts[0].Equals("MSG", StringComparison.OrdinalIgnoreCase) || parts[0].Equals("HMSG", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                bool isHMsg = parts[0].Equals("HMSG", StringComparison.OrdinalIgnoreCase);
+                                int lastIdx = parts.Length - 1;
+                                if (int.TryParse(parts[lastIdx], out int totalLength))
+                                {
+                                    int headerLen = isHMsg ? int.Parse(parts[lastIdx - 1]) : 0;
+                                    var payloadStart = buffer.GetPosition(1, linePosition.Value);
+                                    var remaining = buffer.Slice(payloadStart);
+
+                                    if (remaining.Length >= totalLength + 2)
+                                    {
+                                        var fullPayload = remaining.Slice(0, totalLength);
+                                        string subject = parts[1];
+                                        string? replyTo = null;
+                                        if (isHMsg)
+                                        {
+                                            if (parts.Length == 6) replyTo = parts[3];
+                                            HandleHPub(subject, replyTo, headerLen, fullPayload);
+                                        }
+                                        else
+                                        {
+                                            if (parts.Length == 5) replyTo = parts[3];
+                                            HandlePub(subject, replyTo, fullPayload);
+                                        }
+
+                                        buffer = remaining.Slice(totalLength + 2);
+                                        continue;
+                                    }
+                                    else break;
+                                }
+                            }
                         }
 
                         if ((lineSpan[0] | 0x20) == 'p' || ((lineSpan[0] | 0x20) == 'h' && lineSpan.Length > 5))
@@ -492,7 +531,7 @@ public class BrokerConnection
         if (replyTo != null && Account != null && !string.IsNullOrEmpty(Account.SubjectPrefix))
             scopedReplyTo = $"{Account.SubjectPrefix}.{replyTo}";
         
-        if (!IsRoute)
+        if (!IsRoute && !IsLeaf)
         {
             if (scopedSubject.StartsWith("$JS.", StringComparison.OrdinalIgnoreCase))
             {

@@ -95,7 +95,11 @@ public class BrokerServer : IAsyncDisposable
         _leafnodes.NotifyLocalSub(subject, sid);
     }
 
-    public void NotifyUnsubscription(string sid) => _cluster.BroadcastUnsubscription(sid);
+    public void NotifyUnsubscription(string sid)
+    {
+        _cluster.BroadcastUnsubscription(sid);
+        _leafnodes.NotifyLocalUnsub(sid);
+    }
 
     public bool HasSubscribers(string subject) => _topicTree.HasSubscribers(subject);
 

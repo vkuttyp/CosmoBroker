@@ -28,7 +28,7 @@ public class TestBase : IAsyncDisposable
         Server = new BrokerServer(Port, authenticator: auth, monitorPort: MonitorPort);
     }
 
-    private static int GetFreePort()
+    protected static int GetFreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -50,6 +50,15 @@ public class TestBase : IAsyncDisposable
         var testClient = new TestClient(client, Output);
         // Read initial INFO
         await testClient.ReadResponseAsync(); 
+        return testClient;
+    }
+
+    protected async Task<TestClient> CreateClientAsync(int port, ITestOutputHelper output)
+    {
+        var client = new TcpClient();
+        await client.ConnectAsync("127.0.0.1", port);
+        var testClient = new TestClient(client, output);
+        await testClient.ReadResponseAsync();
         return testClient;
     }
 
