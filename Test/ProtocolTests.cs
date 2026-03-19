@@ -113,6 +113,23 @@ public class ProtocolTests : TestBase
     }
 
     [Fact]
+    public async Task TestReplySubjectIncluded()
+    {
+        await Server.StartAsync(Cts.Token);
+        using var client1 = await CreateClientAsync();
+        using var client2 = await CreateClientAsync();
+
+        await client1.SendAsync("SUB foo 1\r\n");
+        await client2.SendAsync("SUB inbox 2\r\n");
+        await Task.Delay(100);
+
+        await client2.SendAsync("PUB foo inbox 2\r\nok\r\n");
+
+        var resp = await client1.ReadResponseAsync();
+        Assert.Contains("MSG foo 1 inbox 2\r\nok", resp);
+    }
+
+    [Fact]
     public async Task TestInvalidCommand()
     {
         await Server.StartAsync(Cts.Token);

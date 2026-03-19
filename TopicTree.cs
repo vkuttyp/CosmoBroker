@@ -15,6 +15,9 @@ public class TopicTree
         // Queue Groups: GroupName -> { SID -> Connection Set }
         public ConcurrentDictionary<string, ConcurrentDictionary<string, ConcurrentDictionary<BrokerConnection, byte>>> QueueGroups { get; } = new();
 
+        // Queue group cursors for round-robin selection.
+        public ConcurrentDictionary<string, int> QueueGroupCursors { get; } = new();
+
         // Child nodes (e.g., "foo" -> "bar" for "foo.bar")
         public ConcurrentDictionary<string, TopicNode> Children { get; } = new();
     }
@@ -142,7 +145,10 @@ public class TopicTree
             }
             if (entries.Count == 0) continue;
 
-            var start = Random.Shared.Next(entries.Count);
+            int start = node.QueueGroupCursors.AddOrUpdate(
+                groupEntry.Key,
+                _ => 0,
+                (_, v) => (v + 1) % entries.Count);
             (string Sid, BrokerConnection Conn)? selected = null;
             bool sourcePresent = false;
 
