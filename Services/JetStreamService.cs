@@ -455,5 +455,59 @@ namespace CosmoBroker.Services
         };
 
         public bool HasStreams => _streams.Count > 0;
+
+        public string Snapshot()
+        {
+            var snap = new {
+                streams = _streams.Values.Select(s => new {
+                    config = s.Config,
+                    messages = s.Messages.Select(m => new {
+                        seq = m.Sequence,
+                        subject = m.Subject,
+                        payload = Convert.ToBase64String(m.Payload),
+                        ts = m.Timestamp,
+                        exp = m.ExpiresAt
+                    }).ToList()
+                }).ToList()
+            };
+            return System.Text.Json.JsonSerializer.Serialize(snap);
+        }
+
+        public void Restore(string snapshotJson)
+        {
+            var doc = System.Text.Json.JsonDocument.Parse(snapshotJson);
+            if (!doc.RootElement.TryGetProperty("streams", out var streams)) return;
+
+            _streams.Clear();
+            foreach (var s in streams.EnumerateArray())
+            {
+                var configJson = s.GetProperty("config").GetRawText();
+                var config = System.Text.Json.JsonSerializer.Deserialize<StreamConfig>(configJson);
+                if (config == null) continue;
+                var entity = new JetStreamEntity(config);
+
+                if (s.TryGetProperty("messages", out var msgs))
+                {
+                    foreach (var m in msgs.EnumerateArray())
+                    {
+                        var payload = Convert.FromBase64String(m.GetProperty("payload").GetString() ?? "");
+                        var msg = new StreamMessage {
+                            Sequence = m.GetProperty("seq").GetInt64(),
+                            Subject = m.GetProperty("subject").GetString() ?? "",
+                            Payload = payload,
+                            Timestamp = m.GetProperty("ts").GetDateTime(),
+                            ExpiresAt = m.TryGetProperty("exp", out var exp) && exp.ValueKind != System.Text.Json.JsonValueKind.Null ? exp.GetDateTime() : null
+                        };
+                        entity.Messages.Add(msg);
+                    }
+                }
+
+                if (entity.Messages.Count > 0)
+                {
+                    entity.SetLastSequence(entity.Messages.Max(m => m.Sequence));
+                }
+                _streams[config.Name] = entity;
+            }
+        }
     }
 }
