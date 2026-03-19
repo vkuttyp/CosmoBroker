@@ -20,7 +20,6 @@ public class TopicTree
     }
 
     private readonly TopicNode _root = new();
-    private readonly Random _random = new();
 
     public void Subscribe(string subject, BrokerConnection connection, string sid, string? queueGroup = null)
     {
@@ -122,7 +121,7 @@ public class TopicTree
         {
             foreach (var conn in sub.Value.Keys)
             {
-                if (conn == source) continue;
+                if (conn == source && source?.NoEcho == true) continue;
                 conn.SendMessageWithTTL(originalSubject, sub.Key, payload, replyTo, ttl);
             }
         }
@@ -131,16 +130,43 @@ public class TopicTree
         {
             var group = groupEntry.Value;
             if (group.IsEmpty) continue;
-            var members = group.ToArray();
-            if (members.Length > 0)
+
+            // Flatten to (sid, conn) list for proper queue-group selection.
+            var entries = new List<(string Sid, BrokerConnection Conn)>();
+            foreach (var sidEntry in group)
             {
-                var pickSidEntry = members[_random.Next(members.Length)];
-                var conns = pickSidEntry.Value.Keys.ToArray();
-                if (conns.Length > 0)
+                foreach (var conn in sidEntry.Value.Keys)
                 {
-                    var pick = conns[_random.Next(conns.Length)];
-                    if (pick != source) pick.SendMessageWithTTL(originalSubject, pickSidEntry.Key, payload, replyTo, ttl);
+                    entries.Add((sidEntry.Key, conn));
                 }
+            }
+            if (entries.Count == 0) continue;
+
+            var start = Random.Shared.Next(entries.Count);
+            (string Sid, BrokerConnection Conn)? selected = null;
+            bool sourcePresent = false;
+
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var entry = entries[(start + i) % entries.Count];
+                if (entry.Conn == source)
+                {
+                    sourcePresent = true;
+                    if (source?.NoEcho == true) continue;
+                }
+                selected = entry;
+                break;
+            }
+
+            if (selected == null && sourcePresent && source?.NoEcho != true)
+            {
+                selected = entries.First(e => e.Conn == source);
+            }
+
+            if (selected != null)
+            {
+                var pick = selected.Value;
+                pick.Conn.SendMessageWithTTL(originalSubject, pick.Sid, payload, replyTo, ttl);
             }
         }
     }

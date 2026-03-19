@@ -3,6 +3,9 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.Security;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,7 +17,7 @@ public class LeafnodeManager
 {
     private readonly BrokerServer _server;
     private readonly TopicTree _topicTree;
-    private readonly List<Uri> _remoteHubs = new();
+    private readonly List<LeafnodeHubConfig> _remoteHubs = new();
     private readonly ConcurrentDictionary<Uri, BrokerConnection> _connections = new();
 
     public LeafnodeManager(BrokerServer server, TopicTree topicTree)
@@ -23,9 +26,18 @@ public class LeafnodeManager
         _topicTree = topicTree;
     }
 
-    public void AddHub(string uri)
+    public void AddHub(string uri, LeafnodeHubOptions? options = null)
     {
-        _remoteHubs.Add(new Uri(uri));
+        var hub = new Uri(uri);
+        options ??= new LeafnodeHubOptions();
+        // Auto-enable TLS based on scheme when not explicitly set.
+        if (!options.UseTls.HasValue)
+        {
+            options.UseTls = hub.Scheme.Equals("tls", StringComparison.OrdinalIgnoreCase) ||
+                             hub.Scheme.Equals("ssl", StringComparison.OrdinalIgnoreCase) ||
+                             hub.Scheme.Equals("nats+tls", StringComparison.OrdinalIgnoreCase);
+        }
+        _remoteHubs.Add(new LeafnodeHubConfig(hub, options));
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -36,8 +48,10 @@ public class LeafnodeManager
         }
     }
 
-    private async Task ConnectToHubAsync(Uri hub, CancellationToken ct)
+    private async Task ConnectToHubAsync(LeafnodeHubConfig hubConfig, CancellationToken ct)
     {
+        var hub = hubConfig.Hub;
+        var options = hubConfig.Options;
         while (!ct.IsCancellationRequested)
         {
             try
@@ -48,7 +62,27 @@ public class LeafnodeManager
 
                 Stream stream = new NetworkStream(socket, ownsSocket: true);
                 
-                // If Hub requires TLS, we'd wrap in SslStream here (Stubbed)
+                if (options.UseTls == true)
+                {
+                    var sslStream = new SslStream(stream, false, (sender, cert, chain, errors) =>
+                    {
+                        if (options.InsecureSkipVerify) return true;
+                        return errors == SslPolicyErrors.None;
+                    });
+
+                    var clientCerts = new X509CertificateCollection();
+                    if (options.ClientCertificate != null) clientCerts.Add(options.ClientCertificate);
+
+                    var targetHost = options.SslTargetHost ?? hub.Host;
+                    await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                    {
+                        TargetHost = targetHost,
+                        ClientCertificates = clientCerts,
+                        EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+                    }, ct);
+
+                    stream = sslStream;
+                }
 
                 // Leafnode connection acts as a standard NATS client but with bridge permissions
                 var connection = new BrokerConnection(stream, hub.ToString(), _topicTree, null, null, null, _server);
@@ -86,4 +120,14 @@ public class LeafnodeManager
             _ = conn.SendRawAsync($"SUB {subject} {sid}\r\n");
         }
     }
+}
+
+public sealed record LeafnodeHubConfig(Uri Hub, LeafnodeHubOptions Options);
+
+public sealed class LeafnodeHubOptions
+{
+    public bool? UseTls { get; set; }
+    public bool InsecureSkipVerify { get; set; }
+    public X509Certificate2? ClientCertificate { get; set; }
+    public string? SslTargetHost { get; set; }
 }

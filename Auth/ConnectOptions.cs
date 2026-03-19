@@ -36,4 +36,7 @@ public class ConnectOptions
 
     [JsonPropertyName("version")]
     public string? Version { get; set; }
+
+    [JsonPropertyName("no_echo")]
+    public bool NoEcho { get; set; }
 }

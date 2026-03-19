@@ -16,9 +16,14 @@ public class SqlAuthenticator : IAuthenticator
     public async Task<AuthResult> AuthenticateAsync(ConnectOptions options)
     {
         bool success = false;
+        string? resolvedUser = options.User;
         if (!string.IsNullOrEmpty(options.AuthToken))
         {
             success = await _repo.ValidateTokenAsync(options.AuthToken);
+            if (success)
+            {
+                resolvedUser = await _repo.GetUserByTokenAsync(options.AuthToken) ?? resolvedUser;
+            }
         }
         else if (!string.IsNullOrEmpty(options.User))
         {
@@ -30,9 +35,23 @@ public class SqlAuthenticator : IAuthenticator
             return new AuthResult { Success = false, ErrorMessage = "SQL Authentication failed" };
         }
 
-        // TODO: Load account and user permissions from the database
-        var account = new Account { Name = "sql-account", SubjectPrefix = options.User };
-        var user = new User { Name = options.User ?? "sql-user", AccountName = "sql-account" };
+        var userName = resolvedUser ?? "sql-user";
+        var perms = await _repo.GetUserPermissionsAsync(userName);
+
+        var account = new Account
+        {
+            Name = perms?.AccountName ?? "sql-account",
+            SubjectPrefix = perms?.SubjectPrefix ?? resolvedUser
+        };
+        if (perms != null)
+        {
+            account.AllowPublish.AddRange(perms.AllowPublish);
+            account.DenyPublish.AddRange(perms.DenyPublish);
+            account.AllowSubscribe.AddRange(perms.AllowSubscribe);
+            account.DenySubscribe.AddRange(perms.DenySubscribe);
+        }
+
+        var user = new User { Name = userName, AccountName = account.Name };
 
         return new AuthResult { Success = true, Account = account, User = user };
     }

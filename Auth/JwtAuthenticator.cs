@@ -2,6 +2,7 @@ using System;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using NATS.NKeys;
 
 namespace CosmoBroker.Auth;
 
@@ -63,8 +64,15 @@ public class JwtAuthenticator : IAuthenticator
 
                 if (root.TryGetProperty("nats", out var natsClaim))
                 {
-                    // Parse allow/deny pub/sub logic here...
-                    // Stubbed for simplicity.
+                    // Parse allow/deny pub/sub logic for account-level permissions.
+                    if (natsClaim.TryGetProperty("pub", out var pub))
+                    {
+                        ApplyPerms(pub, account.AllowPublish, account.DenyPublish);
+                    }
+                    if (natsClaim.TryGetProperty("sub", out var subPerms))
+                    {
+                        ApplyPerms(subPerms, account.AllowSubscribe, account.DenySubscribe);
+                    }
                 }
 
                 // If JWT is present, the client should still sign the nonce to prove possession of the private key
@@ -74,6 +82,20 @@ public class JwtAuthenticator : IAuthenticator
                     if (!isSigValid)
                     {
                         return Task.FromResult(new AuthResult { Success = false, ErrorMessage = "Invalid JWT signature" });
+                    }
+                }
+                else
+                {
+                    return Task.FromResult(new AuthResult { Success = false, ErrorMessage = "Missing JWT nonce signature" });
+                }
+
+                // Verify JWT signature against the issuer (account) public key.
+                if (!string.IsNullOrEmpty(iss))
+                {
+                    bool jwtSigValid = VerifyJwtSignature(options.Jwt, iss);
+                    if (!jwtSigValid)
+                    {
+                        return Task.FromResult(new AuthResult { Success = false, ErrorMessage = "Invalid JWT token signature" });
                     }
                 }
 
@@ -90,10 +112,52 @@ public class JwtAuthenticator : IAuthenticator
 
     private bool VerifyEd25519Signature(string publicKey, string signature, string data)
     {
-        // STUB: In a real implementation, this uses an Ed25519 library (like NSec)
-        // to verify that `signature` is the valid Ed25519 signature of `data` using `publicKey`.
-        // For demonstration, we assume it's valid if they are provided.
-        return true; 
+        if (string.IsNullOrWhiteSpace(publicKey) || string.IsNullOrWhiteSpace(signature)) return false;
+        try
+        {
+            var kp = KeyPair.FromPublicKey(publicKey);
+            var sig = DecodeBase64Any(signature);
+            var bytes = Encoding.UTF8.GetBytes(data);
+            return kp.Verify(bytes, sig);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void ApplyPerms(JsonElement perms, System.Collections.Generic.List<string> allow, System.Collections.Generic.List<string> deny)
+    {
+        if (perms.ValueKind != JsonValueKind.Object) return;
+        if (perms.TryGetProperty("allow", out var a))
+        {
+            foreach (var v in ReadStrings(a)) allow.Add(v);
+        }
+        if (perms.TryGetProperty("deny", out var d))
+        {
+            foreach (var v in ReadStrings(d)) deny.Add(v);
+        }
+    }
+
+    private static System.Collections.Generic.IEnumerable<string> ReadStrings(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            var s = element.GetString();
+            if (!string.IsNullOrWhiteSpace(s)) yield return s;
+            yield break;
+        }
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                {
+                    var s = item.GetString();
+                    if (!string.IsNullOrWhiteSpace(s)) yield return s;
+                }
+            }
+        }
     }
 
     private static byte[] Base64UrlDecode(string input)
@@ -101,5 +165,31 @@ public class JwtAuthenticator : IAuthenticator
         string padded = input.PadRight(input.Length + (4 - input.Length % 4) % 4, '=');
         string base64 = padded.Replace('-', '+').Replace('_', '/');
         return Convert.FromBase64String(base64);
+    }
+
+    private static byte[] DecodeBase64Any(string input)
+    {
+        // Accept both base64 and base64url encodings.
+        if (input.Contains('-') || input.Contains('_'))
+            return Base64UrlDecode(input);
+        return Convert.FromBase64String(input);
+    }
+
+    private static bool VerifyJwtSignature(string jwt, string issuerPublicKey)
+    {
+        try
+        {
+            var parts = jwt.Split('.');
+            if (parts.Length != 3) return false;
+            var signingInput = $"{parts[0]}.{parts[1]}";
+            var sig = Base64UrlDecode(parts[2]);
+
+            var kp = KeyPair.FromPublicKey(issuerPublicKey);
+            return kp.Verify(Encoding.UTF8.GetBytes(signingInput), sig);
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

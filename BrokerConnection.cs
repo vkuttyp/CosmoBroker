@@ -34,6 +34,7 @@ public class BrokerConnection
 
     private ProtocolType _protocol = ProtocolType.Unknown;
     private bool _isAuthenticated = false;
+    private bool _certAuthenticated = false;
     public bool IsRoute { get; set; } = false;
     public Auth.Account? Account { get; private set; }
     public Auth.User? User { get; private set; }
@@ -124,6 +125,7 @@ public class BrokerConnection
         if (result.Success)
         {
             _isAuthenticated = true;
+            _certAuthenticated = true;
             Account = result.Account;
             User = result.User;
         }
@@ -506,8 +508,18 @@ public class BrokerConnection
 
     public async Task HandleConnect(Auth.ConnectOptions options)
     {
+        NoEcho = options.NoEcho;
         if (_authenticator != null)
         {
+            if (_certAuthenticated && _authenticator is Auth.X509Authenticator)
+            {
+                var ok = "+OK\r\n"u8;
+                BytesOut += ok.Length;
+                _writerPipe.Writer.Write(ok);
+                await _writerPipe.Writer.FlushAsync();
+                return;
+            }
+
             var result = await _authenticator.AuthenticateAsync(options);
             _isAuthenticated = result.Success;
             if (!_isAuthenticated)
@@ -527,6 +539,8 @@ public class BrokerConnection
             }
         }
     }
+
+    public bool NoEcho { get; private set; }
 
     public void SendMessage(string subject, string sid, ReadOnlySequence<byte> payload, string? replyTo = null) => SendMessageWithTTL(subject, sid, payload, replyTo, null);
 

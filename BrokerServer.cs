@@ -58,7 +58,7 @@ public class BrokerServer : IAsyncDisposable
         }
     }
 
-    public void AddLeafnodeHub(string uri) => _leafnodes.AddHub(uri);
+    public void AddLeafnodeHub(string uri, Services.LeafnodeHubOptions? options = null) => _leafnodes.AddHub(uri, options);
 
     public void EnterLameDuckMode()
     {
