@@ -97,7 +97,14 @@ public class LeafnodeManager
 
                 if (options.ConnectOptions != null)
                 {
+                    options.ConnectOptions.Leaf = true;
                     string json = System.Text.Json.JsonSerializer.Serialize(options.ConnectOptions);
+                    await connection.SendRawAsync($"CONNECT {json}\r\n");
+                }
+                else
+                {
+                    var connect = new Auth.ConnectOptions { Leaf = true };
+                    string json = System.Text.Json.JsonSerializer.Serialize(connect);
                     await connection.SendRawAsync($"CONNECT {json}\r\n");
                 }
 

@@ -584,6 +584,23 @@ public class BrokerConnection
     public async Task HandleConnect(Auth.ConnectOptions options)
     {
         NoEcho = options.NoEcho;
+        if (options.Route)
+        {
+            IsRoute = true;
+            _isAuthenticated = true;
+            Account = new Auth.Account { Name = "global" };
+            User = new Auth.User { Name = "route", AccountName = "global" };
+            var ok = "+OK\r\n"u8;
+            BytesOut += ok.Length;
+            Interlocked.Add(ref _bytesOutTotal, ok.Length);
+            _writerPipe.Writer.Write(ok);
+            await _writerPipe.Writer.FlushAsync();
+            return;
+        }
+        if (options.Leaf)
+        {
+            IsLeaf = true;
+        }
         if (_authenticator != null)
         {
             if (!string.IsNullOrEmpty(options.Nkey))

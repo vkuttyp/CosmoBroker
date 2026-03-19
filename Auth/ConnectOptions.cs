@@ -39,4 +39,10 @@ public class ConnectOptions
 
     [JsonPropertyName("no_echo")]
     public bool NoEcho { get; set; }
+
+    [JsonPropertyName("route")]
+    public bool Route { get; set; }
+
+    [JsonPropertyName("leaf")]
+    public bool Leaf { get; set; }
 }

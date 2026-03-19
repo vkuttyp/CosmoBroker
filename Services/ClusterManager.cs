@@ -49,11 +49,16 @@ public class ClusterManager
                 Stream stream = new NetworkStream(socket, ownsSocket: true);
 
                 // Create a connection marked as a Route
-                var connection = new BrokerConnection(stream, peer.ToString(), _topicTree, null, null, null, _server);
+                var connection = new BrokerConnection(stream, peer.ToString(), _topicTree, null, null, null, _server, sendInfoOnConnect: false);
                 connection.IsRoute = true;
                 _connections[peer] = connection;
 
                 Console.WriteLine($"[ClusterManager] Connected to peer {peer}");
+
+                // Identify as route
+                var connect = new Auth.ConnectOptions { Route = true };
+                string json = System.Text.Json.JsonSerializer.Serialize(connect);
+                await connection.SendRawAsync($"CONNECT {json}\r\n");
 
                 // Sync all local subscriptions to the new peer
                 await SyncSubscriptionsAsync(connection);

@@ -17,7 +17,12 @@ public static class NatsParser
         // Command detection via Span (case insensitive) to avoid allocations for common commands
         if (StartsWith(lineSpan, "PING")) { connection.HandlePing(); return; }
         if (StartsWith(lineSpan, "PONG")) { return; }
-        if (StartsWith(lineSpan, "INFO")) { _ = connection.SendInfo(); return; }
+        if (StartsWith(lineSpan, "INFO"))
+        {
+            if (connection.IsRoute || connection.IsLeaf) return;
+            _ = connection.SendInfo();
+            return;
+        }
 
         // ARGUMENT PARSING OPTIMIZATION: Use Span-based splitting
         // NATS commands are space-separated
