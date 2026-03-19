@@ -10,6 +10,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.IO;
+using CosmoBroker.Auth;
 
 namespace CosmoBroker.Services;
 
@@ -84,16 +85,23 @@ public class LeafnodeManager
                     stream = sslStream;
                 }
 
-                // Leafnode connection acts as a standard NATS client but with bridge permissions
-                var connection = new BrokerConnection(stream, hub.ToString(), _topicTree, null, null, null, _server);
+                // Leafnode connection acts as a NATS client (no server INFO push)
+                var connection = new BrokerConnection(stream, hub.ToString(), _topicTree, null, null, null, _server, sendInfoOnConnect: false);
                 _connections[hub] = connection;
 
                 Console.WriteLine($"[Leafnode] Connected to hub {hub}");
 
+                // Start connection loop before sending commands
+                _ = Task.Run(async () => await connection.RunAsync(), ct);
+
+                if (options.ConnectOptions != null)
+                {
+                    string json = System.Text.Json.JsonSerializer.Serialize(options.ConnectOptions);
+                    await connection.SendRawAsync($"CONNECT {json}\r\n");
+                }
+
                 // Bridge local subscriptions to the hub
                 await SyncLocalSubsToHub(connection);
-
-                await connection.RunAsync();
             }
             catch (Exception ex)
             {
@@ -130,4 +138,5 @@ public sealed class LeafnodeHubOptions
     public bool InsecureSkipVerify { get; set; }
     public X509Certificate2? ClientCertificate { get; set; }
     public string? SslTargetHost { get; set; }
+    public Auth.ConnectOptions? ConnectOptions { get; set; }
 }

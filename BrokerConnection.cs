@@ -15,6 +15,7 @@ namespace CosmoBroker;
 public class BrokerConnection
 {
     private readonly Stream _stream;
+    private readonly bool _sendInfoOnConnect;
     private readonly string _remoteEndPoint;
     private readonly TopicTree _topicTree;
     private readonly Persistence.MessageRepository? _repo;
@@ -81,7 +82,7 @@ public class BrokerConnection
 
     private readonly ConcurrentDictionary<string, Subscription> _subscriptions = new();
 
-    public BrokerConnection(Stream stream, string remoteEndPoint, TopicTree topicTree, Persistence.MessageRepository? repo = null, Auth.IAuthenticator? authenticator = null, Services.JetStreamService? jetStream = null, BrokerServer? server = null)
+    public BrokerConnection(Stream stream, string remoteEndPoint, TopicTree topicTree, Persistence.MessageRepository? repo = null, Auth.IAuthenticator? authenticator = null, Services.JetStreamService? jetStream = null, BrokerServer? server = null, bool sendInfoOnConnect = true)
     {
         _stream = stream;
         _remoteEndPoint = remoteEndPoint;
@@ -92,6 +93,7 @@ public class BrokerConnection
         _server = server;
         _readerPipe = new Pipe();
         _writerPipe = new Pipe();
+        _sendInfoOnConnect = sendInfoOnConnect;
 
         if (_authenticator == null)
         {
@@ -107,14 +109,17 @@ public class BrokerConnection
         var processTask = ProcessPipeAsync(_readerPipe.Reader);
         var writeTask = FlushPipeAsync(_stream, _writerPipe.Reader);
 
-        _ = Task.Run(async () => {
-            await Task.Delay(50);
-            if (_protocol == ProtocolType.Unknown || _protocol == ProtocolType.NATS)
-            {
-                _protocol = ProtocolType.NATS;
-                await SendInfo();
-            }
-        });
+        if (_sendInfoOnConnect)
+        {
+            _ = Task.Run(async () => {
+                await Task.Delay(50);
+                if (_protocol == ProtocolType.Unknown || _protocol == ProtocolType.NATS)
+                {
+                    _protocol = ProtocolType.NATS;
+                    await SendInfo();
+                }
+            });
+        }
 
         await Task.WhenAny(readTask, processTask, writeTask);
         Cleanup();
