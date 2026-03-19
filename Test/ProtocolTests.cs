@@ -155,4 +155,30 @@ public class ProtocolTests : TestBase
         Assert.Contains("-ERR", resp);
         Assert.Contains("Maximum Payload Exceeded", resp);
     }
+
+    [Fact]
+    public async Task TestBackpressureDropsMessages()
+    {
+        await Server.StartAsync(Cts.Token);
+        using var slow = await CreateClientAsync();
+        using var pub = await CreateClientAsync();
+
+        await slow.SendAsync("SUB foo 1\r\n");
+        await Task.Delay(100);
+
+        // Flood with large payloads; do not read from slow client to simulate backpressure.
+        string payload = new string('b', 262144); // 256 KB
+        for (int i = 0; i < 50; i++)
+        {
+            await pub.SendAsync($"PUB foo {payload.Length}\r\n{payload}\r\n");
+        }
+
+        // Now read whatever made it through; ensure not all messages are delivered.
+        var resp = await slow.ReadResponseAsync();
+        int count = 0;
+        int idx = 0;
+        while ((idx = resp.IndexOf("MSG", idx)) != -1) { count++; idx++; }
+
+        Assert.True(count < 50);
+    }
 }

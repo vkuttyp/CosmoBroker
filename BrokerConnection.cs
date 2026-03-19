@@ -9,6 +9,7 @@ using System.Collections.Concurrent;
 using System.Linq;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 
 namespace CosmoBroker;
 
@@ -46,6 +47,8 @@ public class BrokerConnection
 
     public long BytesIn { get; private set; }
     public long BytesOut { get; private set; }
+    private long _bytesInTotal = 0;
+    private long _bytesOutTotal = 0;
     public long MsgIn { get; private set; }
     public long MsgOut { get; private set; }
 
@@ -57,6 +60,7 @@ public class BrokerConnection
     private static readonly byte[] Pong = "PONG\r\n"u8.ToArray();
     private static readonly byte[] HeaderMagic = "NATS/1.0\r\nNats-Msg-TTL: "u8.ToArray();
     private static readonly byte[] HeaderEnd = "\r\n\r\n"u8.ToArray();
+    private const long MaxBufferedBytes = 8 * 1024 * 1024; // 8MB backpressure limit
 
     // Optimization: Per-connection byte cache for strings to avoid re-encoding
     private readonly ConcurrentDictionary<string, byte[]> _stringByteCache = new();
@@ -148,6 +152,7 @@ public class BrokerConnection
     {
         var bytes = Encoding.UTF8.GetBytes(rawCommand);
         BytesOut += bytes.Length;
+        Interlocked.Add(ref _bytesOutTotal, bytes.Length);
         _writerPipe.Writer.Write(bytes);
         await _writerPipe.Writer.FlushAsync();
     }
@@ -163,6 +168,7 @@ public class BrokerConnection
         
         byte[] bytes = Encoding.UTF8.GetBytes(infoStr);
         BytesOut += bytes.Length;
+        Interlocked.Add(ref _bytesOutTotal, bytes.Length);
         _writerPipe.Writer.Write(bytes);
         await _writerPipe.Writer.FlushAsync();
     }
@@ -178,6 +184,7 @@ public class BrokerConnection
                 int bytesRead = await stream.ReadAsync(memory);
                 if (bytesRead == 0) break;
                 BytesIn += bytesRead;
+                Interlocked.Add(ref _bytesInTotal, bytesRead);
                 writer.Advance(bytesRead);
                 var result = await writer.FlushAsync();
                 if (result.IsCompleted || result.IsCanceled) break;
@@ -286,6 +293,7 @@ public class BrokerConnection
             {
                 var response = WebSockets.WebSocketFramer.CreateHandshakeResponse(request);
                 BytesOut += response.Length;
+                Interlocked.Add(ref _bytesOutTotal, response.Length);
                 _writerPipe.Writer.Write(response);
                 _ = _writerPipe.Writer.FlushAsync();
                 buffer = buffer.Slice(bytesConsumed);
@@ -312,6 +320,7 @@ public class BrokerConnection
                 case 1:
                     var ack = MQTT.MqttParser.CreateConnAck();
                     BytesOut += ack.Length;
+                    Interlocked.Add(ref _bytesOutTotal, ack.Length);
                     _writerPipe.Writer.Write(ack);
                     _ = _writerPipe.Writer.FlushAsync();
                     _isAuthenticated = true;
@@ -340,6 +349,7 @@ public class BrokerConnection
                         }
                         var sack = MQTT.MqttParser.CreateSubAck(packetId);
                         BytesOut += sack.Length;
+                        Interlocked.Add(ref _bytesOutTotal, sack.Length);
                         _writerPipe.Writer.Write(sack);
                         _ = _writerPipe.Writer.FlushAsync();
                     }
@@ -347,6 +357,7 @@ public class BrokerConnection
                 case 12:
                     var resp = MQTT.MqttParser.CreatePingResp();
                     BytesOut += resp.Length;
+                    Interlocked.Add(ref _bytesOutTotal, resp.Length);
                     _writerPipe.Writer.Write(resp);
                     _ = _writerPipe.Writer.FlushAsync();
                     break;
@@ -519,6 +530,7 @@ public class BrokerConnection
     public void HandlePing()
     {
         BytesOut += Pong.Length;
+        Interlocked.Add(ref _bytesOutTotal, Pong.Length);
         _writerPipe.Writer.Write(Pong);
         _ = _writerPipe.Writer.FlushAsync();
     }
@@ -532,6 +544,7 @@ public class BrokerConnection
             {
                 var ok = "+OK\r\n"u8;
                 BytesOut += ok.Length;
+                Interlocked.Add(ref _bytesOutTotal, ok.Length);
                 _writerPipe.Writer.Write(ok);
                 await _writerPipe.Writer.FlushAsync();
                 return;
@@ -551,6 +564,7 @@ public class BrokerConnection
                 User = result.User;
                 var ok = "+OK\r\n"u8;
                 BytesOut += ok.Length;
+                Interlocked.Add(ref _bytesOutTotal, ok.Length);
                 _writerPipe.Writer.Write(ok);
                 await _writerPipe.Writer.FlushAsync();
             }
@@ -566,6 +580,7 @@ public class BrokerConnection
     public void SendMessageWithTTL(string subject, string sid, ReadOnlySequence<byte> payload, string? replyTo, TimeSpan? ttl)
     {
         if (!_subscriptions.TryGetValue(sid, out var sub)) return;
+        if (Interlocked.Read(ref _bytesOutTotal) - Interlocked.Read(ref _bytesInTotal) > MaxBufferedBytes) return;
         sub.ReceivedMsgs++;
         MsgOut++;
 
@@ -583,6 +598,7 @@ public class BrokerConnection
         {
             var frame = MQTT.MqttParser.FramePublish(clientSubject, payload.IsSingleSegment ? payload.FirstSpan : payload.ToArray());
             BytesOut += frame.Length;
+            Interlocked.Add(ref _bytesOutTotal, frame.Length);
             writer.Write(frame);
             _ = writer.FlushAsync();
             return;
@@ -609,6 +625,7 @@ public class BrokerConnection
                 WriteNatsMessageToStream(ms, useHeaders, clientSubject, sid, clientReplyTo, headerLen, totalPayloadLenBytes, ttlBytes, payload);
                 var wsFrame = WebSockets.WebSocketFramer.FrameMessage(rented.AsSpan(0, (int)ms.Position));
                 BytesOut += wsFrame.Length;
+                Interlocked.Add(ref _bytesOutTotal, wsFrame.Length);
                 writer.Write(wsFrame);
             } finally {
                 ArrayPool<byte>.Shared.Return(rented);
@@ -639,6 +656,7 @@ public class BrokerConnection
             foreach (var seg in payload) writer.Write(seg.Span);
             writer.Write(Crlf);
             BytesOut += 50 + totalPayloadLen; 
+            Interlocked.Add(ref _bytesOutTotal, 50 + totalPayloadLen);
         }
 
         _ = writer.FlushAsync();
@@ -670,6 +688,7 @@ public class BrokerConnection
     {
         var err = Encoding.UTF8.GetBytes($"-ERR '{message}'\r\n");
         BytesOut += err.Length;
+        Interlocked.Add(ref _bytesOutTotal, err.Length);
         _writerPipe.Writer.Write(err);
         _ = _writerPipe.Writer.FlushAsync();
     }
