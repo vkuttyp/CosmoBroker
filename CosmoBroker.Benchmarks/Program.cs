@@ -62,11 +62,11 @@ class Program
         for (int p = 0; p < options.Publishers; p++)
         {
             var toSend = perPublisher + (p == 0 ? remainder : 0);
-            publishers.Add(Task.Run(async () =>
+            publishers.Add(Task.Run(() =>
             {
                 for (int i = 0; i < toSend; i++)
                 {
-                    await pubConn.PublishAsync("bench.foo", payload);
+                    _ = pubConn.PublishAsync("bench.foo", payload);
                 }
             }));
         }
@@ -128,7 +128,7 @@ sealed record BenchOptions
 {
     public string Url { get; init; } = "nats://localhost:4222";
     public string Label { get; init; } = "Target";
-    public int Count { get; init; } = 100_000;
+    public int Count { get; init; } = 500_000;
     public int PayloadBytes { get; init; } = 256;
     public int Publishers { get; init; } = 1;
     public int LatencySamples { get; init; } = 1_000;

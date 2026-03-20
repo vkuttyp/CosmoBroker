@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Buffers.Text;
 using System.IO.Pipelines;
 using System.Net.Sockets;
 using System.Text;
@@ -60,13 +61,13 @@ public class BrokerConnection
     public long MsgOut { get; private set; }
 
     // Optimization: Cached byte arrays for common protocol tokens
-    private static readonly byte[] MsgVerb = "MSG "u8.ToArray();
-    private static readonly byte[] HMsgVerb = "HMSG "u8.ToArray();
-    private static readonly byte[] Space = " "u8.ToArray();
-    private static readonly byte[] Crlf = "\r\n"u8.ToArray();
+    private static ReadOnlySpan<byte> MsgVerb => "MSG "u8;
+    private static ReadOnlySpan<byte> HMsgVerb => "HMSG "u8;
+    private static ReadOnlySpan<byte> Space => " "u8;
+    private static ReadOnlySpan<byte> Crlf => "\r\n"u8;
     private static readonly byte[] Pong = "PONG\r\n"u8.ToArray();
-    private static readonly byte[] HeaderMagic = "NATS/1.0\r\nNats-Msg-TTL: "u8.ToArray();
-    private static readonly byte[] HeaderEnd = "\r\n\r\n"u8.ToArray();
+    private static ReadOnlySpan<byte> HeaderMagic => "NATS/1.0\r\nNats-Msg-TTL: "u8;
+    private static ReadOnlySpan<byte> HeaderEnd => "\r\n\r\n"u8;
     private static readonly long MaxBufferedBytes =
         long.TryParse(Environment.GetEnvironmentVariable("COSMOBROKER_MAX_BUFFER_BYTES"), out var maxBuf)
             ? maxBuf
@@ -225,6 +226,46 @@ public class BrokerConnection
         finally { await writer.CompleteAsync(); }
     }
 
+    private bool ProcessPubPayload(ref ReadOnlySequence<byte> buffer, SequencePosition linePosition, ReadOnlySpan<byte> subject, ReadOnlySpan<byte> replyTo, int totalLength, int headerLen, bool isHPub)
+    {
+        var payloadStart = buffer.GetPosition(1, linePosition);
+        var remaining = buffer.Slice(payloadStart);
+
+        if (totalLength > MaxPayloadBytes)
+        {
+            SendError("Maximum Payload Exceeded");
+            if (remaining.Length >= totalLength + 2)
+            {
+                buffer = remaining.Slice(totalLength + 2);
+                return true;
+            }
+            return false;
+        }
+
+        if (remaining.Length >= totalLength + 2)
+        {
+            var fullPayload = remaining.Slice(0, totalLength);
+            
+            // Optimization: Fast path for TopicTree
+            if (!isHPub && _jetStream.HasStreams == false && (Account == null || string.IsNullOrEmpty(Account.SubjectPrefix)))
+            {
+                string? replyToStr = replyTo.IsEmpty ? null : Encoding.UTF8.GetString(replyTo);
+                _topicTree.Publish(subject, fullPayload, replyToStr, this);
+            }
+            else
+            {
+                string subjectStr = Encoding.UTF8.GetString(subject);
+                string? replyToStr = replyTo.IsEmpty ? null : Encoding.UTF8.GetString(replyTo);
+                if (isHPub) HandleHPub(subjectStr, replyToStr, headerLen, fullPayload);
+                else HandlePub(subjectStr, replyToStr, fullPayload);
+            }
+
+            buffer = remaining.Slice(totalLength + 2);
+            return true;
+        }
+        return false;
+    }
+
     private async Task ProcessPipeAsync(PipeReader reader)
     {
         try
@@ -302,41 +343,80 @@ public class BrokerConnection
                             }
                         }
 
-                        if ((lineSpan[0] | 0x20) == 'p' || ((lineSpan[0] | 0x20) == 'h' && lineSpan.Length > 5))
+                        if ((lineSpan[0] | 0x20) == 'p' && (lineSpan[1] | 0x20) == 'u' && (lineSpan[2] | 0x20) == 'b' && (lineSpan[3] == ' ' || lineSpan[3] == '\r'))
                         {
-                            string lineStr = Encoding.UTF8.GetString(lineSpan).TrimEnd('\r');
-                            var parts = lineStr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                            if (parts.Length > 0 && (parts[0].Equals("PUB", StringComparison.OrdinalIgnoreCase) || parts[0].Equals("HPUB", StringComparison.OrdinalIgnoreCase)))
+                            // PUB <subject> [reply-to] <payload-bytes>
+                            var parts = lineSpan;
+                            int space1 = parts.IndexOf((byte)' ');
+                            if (space1 != -1)
                             {
-                                bool isHPub = parts[0].Equals("HPUB", StringComparison.OrdinalIgnoreCase);
-                                int lastIdx = parts.Length - 1;
-                                if (int.TryParse(parts[lastIdx], out int totalLength))
+                                var remainingLine = parts.Slice(space1 + 1);
+                                int space2 = remainingLine.IndexOf((byte)' ');
+                                if (space2 != -1)
                                 {
-                                    int headerLen = isHPub ? int.Parse(parts[lastIdx - 1]) : 0;
-                                    var payloadStart = buffer.GetPosition(1, linePosition.Value);
-                                    var remaining = buffer.Slice(payloadStart);
+                                    var subject = remainingLine.Slice(0, space2);
+                                    var rest = remainingLine.Slice(space2 + 1);
+                                    int space3 = rest.IndexOf((byte)' ');
+                                    int totalLength;
                                     
-                                    if (totalLength > MaxPayloadBytes)
+                                    if (space3 != -1)
                                     {
-                                        SendError("Maximum Payload Exceeded");
-                                        if (remaining.Length >= totalLength + 2)
+                                        var replyTo = rest.Slice(0, space3);
+                                        if (Utf8Parser.TryParse(rest.Slice(space3 + 1), out totalLength, out _))
                                         {
-                                            buffer = remaining.Slice(totalLength + 2);
-                                            continue;
+                                            if (ProcessPubPayload(ref buffer, linePosition.Value, subject, replyTo, totalLength, 0, false)) continue;
+                                            else break;
                                         }
+                                    }
+                                    else if (Utf8Parser.TryParse(rest, out totalLength, out _))
+                                    {
+                                        if (ProcessPubPayload(ref buffer, linePosition.Value, subject, default, totalLength, 0, false)) continue;
                                         else break;
                                     }
+                                }
+                            }
+                        }
 
-                                    if (remaining.Length >= totalLength + 2)
+                        if ((lineSpan[0] | 0x20) == 'h' && lineSpan.Length > 5 && (lineSpan[1] | 0x20) == 'p' && (lineSpan[2] | 0x20) == 'u' && (lineSpan[3] | 0x20) == 'b')
+                        {
+                            // HPUB <subject> [reply-to] <header-bytes> <total-bytes>
+                            var parts = lineSpan;
+                            int space1 = parts.IndexOf((byte)' ');
+                            if (space1 != -1)
+                            {
+                                var remainingLine = parts.Slice(space1 + 1);
+                                int space2 = remainingLine.IndexOf((byte)' ');
+                                if (space2 != -1)
+                                {
+                                    var subject = remainingLine.Slice(0, space2);
+                                    var rest = remainingLine.Slice(space2 + 1);
+                                    int space3 = rest.IndexOf((byte)' ');
+                                    if (space3 != -1)
                                     {
-                                        var fullPayload = remaining.Slice(0, totalLength);
-                                        if (isHPub) HandleHPub(parts[1], parts.Length == 5 ? parts[2] : null, headerLen, fullPayload);
-                                        else HandlePub(parts[1], parts.Length == 4 ? parts[2] : null, fullPayload);
-                                        
-                                        buffer = remaining.Slice(totalLength + 2);
-                                        continue; 
+                                        var nextPart = rest.Slice(space3 + 1);
+                                        int space4 = nextPart.IndexOf((byte)' ');
+                                        if (space4 != -1)
+                                        {
+                                            // ReplyTo present: HPUB <subj> <reply> <hdr> <tot>
+                                            var replyTo = rest.Slice(0, space3);
+                                            if (Utf8Parser.TryParse(nextPart.Slice(0, space4), out int headerLen, out _) && 
+                                                Utf8Parser.TryParse(nextPart.Slice(space4 + 1), out int totalLen, out _))
+                                            {
+                                                if (ProcessPubPayload(ref buffer, linePosition.Value, subject, replyTo, totalLen, headerLen, true)) continue;
+                                                else break;
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // No ReplyTo: HPUB <subj> <hdr> <tot>
+                                            if (Utf8Parser.TryParse(rest.Slice(0, space3), out int headerLen, out _) && 
+                                                Utf8Parser.TryParse(rest.Slice(space3 + 1), out int totalLen, out _))
+                                            {
+                                                if (ProcessPubPayload(ref buffer, linePosition.Value, subject, default, totalLen, headerLen, true)) continue;
+                                                else break;
+                                            }
+                                        }
                                     }
-                                    else break;
                                 }
                             }
                         }
@@ -433,13 +513,15 @@ public class BrokerConnection
 
     private async Task SendLoopAsync(Stream stream, ChannelReader<OutboundBuffer> reader)
     {
+        var batch = new List<OutboundBuffer>(SendBatchMaxItems);
         try
         {
             while (await reader.WaitToReadAsync())
             {
                 while (reader.TryRead(out var first))
                 {
-                    var batch = new List<OutboundBuffer>(SendBatchMaxItems) { first };
+                    batch.Clear();
+                    batch.Add(first);
                     var total = first.Length;
 
                     while (total < SendBatchBytes && batch.Count < SendBatchMaxItems && reader.TryRead(out var next))
@@ -477,7 +559,7 @@ public class BrokerConnection
         {
             Console.WriteLine($"[CosmoBroker] Flush error ({_remoteEndPoint}): {ex.Message}");
         }
-        finally { }
+        finally { batch.Clear(); }
     }
 
     private bool IsAllowedPublish(string subject)
@@ -576,16 +658,23 @@ public class BrokerConnection
         if (!IsAllowedPublish(subject)) { SendError($"Permissions Violation for Publish to {subject}"); return; }
         
         // Fast mapping/scoping
-        string mappedSubject = subject;
-        if (Account != null && Account.Name != "global") mappedSubject = Account.Mappings.Map(subject);
-
-        string scopedSubject = mappedSubject;
-        if (Account != null && !string.IsNullOrEmpty(Account.SubjectPrefix))
-            scopedSubject = $"{Account.SubjectPrefix}.{mappedSubject}";
+        string scopedSubject = subject;
+        if (Account != null)
+        {
+            var mappedSubject = (Account.Name != "global") ? Account.Mappings.Map(subject) : subject;
+            if (!string.IsNullOrEmpty(Account.SubjectPrefix))
+            {
+                scopedSubject = Account.SubjectPrefix + "." + mappedSubject;
+            }
+            else
+            {
+                scopedSubject = mappedSubject;
+            }
+        }
 
         string? scopedReplyTo = replyTo;
         if (replyTo != null && Account != null && !string.IsNullOrEmpty(Account.SubjectPrefix))
-            scopedReplyTo = $"{Account.SubjectPrefix}.{replyTo}";
+            scopedReplyTo = Account.SubjectPrefix + "." + replyTo;
         
         if (!IsRoute && !IsLeaf)
         {
@@ -718,60 +807,78 @@ public class BrokerConnection
         _sendQueue.Writer.TryWrite(new OutboundBuffer(buffer, length, pooled));
     }
 
-    private OutboundBuffer BuildNatsMessage(string subject, string sid, string? replyTo, bool useHeaders, int headerLen, byte[] totalPayloadLenBytes, byte[]? ttlBytes, ReadOnlySequence<byte> payload)
+    private OutboundBuffer BuildNatsMessage(string subject, string sid, string? replyTo, bool useHeaders, int headerLen, ReadOnlySpan<byte> totalPayloadLenBytes, ReadOnlySpan<byte> ttlBytes, ReadOnlySequence<byte> payload)
     {
         var subjectBytes = GetCachedBytes(subject);
         var sidBytes = GetCachedBytes(sid);
         var replyBytes = !string.IsNullOrEmpty(replyTo) ? GetCachedBytes(replyTo) : null;
-        var headerLenBytes = useHeaders ? GetCachedBytes(headerLen.ToString()) : null;
+        
+        Span<byte> hlenBuf = stackalloc byte[16];
+        int hlenLen = 0;
+        if (useHeaders) Utf8Formatter.TryFormat(headerLen, hlenBuf, out hlenLen);
 
         int size = 0;
         size += (useHeaders ? HMsgVerb.Length : MsgVerb.Length);
         size += subjectBytes.Length + Space.Length;
         size += sidBytes.Length + Space.Length;
         if (replyBytes != null) size += replyBytes.Length + Space.Length;
-        if (useHeaders) size += headerLenBytes!.Length + Space.Length;
+        if (useHeaders) size += hlenLen + Space.Length;
         size += totalPayloadLenBytes.Length + Crlf.Length;
-        if (useHeaders) size += HeaderMagic.Length + ttlBytes!.Length + HeaderEnd.Length;
+        if (useHeaders) size += HeaderMagic.Length + ttlBytes.Length + HeaderEnd.Length;
         size += (int)payload.Length + Crlf.Length;
 
         var buffer = ArrayPool<byte>.Shared.Rent(size);
+        var span = buffer.AsSpan();
         var offset = 0;
 
-        void WriteBytes(ReadOnlySpan<byte> src)
-        {
-            src.CopyTo(buffer.AsSpan(offset));
-            offset += src.Length;
-        }
+        (useHeaders ? HMsgVerb : MsgVerb).CopyTo(span.Slice(offset));
+        offset += (useHeaders ? HMsgVerb.Length : MsgVerb.Length);
 
-        WriteBytes(useHeaders ? HMsgVerb : MsgVerb);
-        WriteBytes(subjectBytes);
-        WriteBytes(Space);
-        WriteBytes(sidBytes);
-        WriteBytes(Space);
+        subjectBytes.CopyTo(span.Slice(offset));
+        offset += subjectBytes.Length;
+        Space.CopyTo(span.Slice(offset));
+        offset += Space.Length;
+
+        sidBytes.CopyTo(span.Slice(offset));
+        offset += sidBytes.Length;
+        Space.CopyTo(span.Slice(offset));
+        offset += Space.Length;
+
         if (replyBytes != null)
         {
-            WriteBytes(replyBytes);
-            WriteBytes(Space);
+            replyBytes.CopyTo(span.Slice(offset));
+            offset += replyBytes.Length;
+            Space.CopyTo(span.Slice(offset));
+            offset += Space.Length;
         }
         if (useHeaders)
         {
-            WriteBytes(headerLenBytes!);
-            WriteBytes(Space);
+            hlenBuf.Slice(0, hlenLen).CopyTo(span.Slice(offset));
+            offset += hlenLen;
+            Space.CopyTo(span.Slice(offset));
+            offset += Space.Length;
         }
-        WriteBytes(totalPayloadLenBytes);
-        WriteBytes(Crlf);
+        totalPayloadLenBytes.CopyTo(span.Slice(offset));
+        offset += totalPayloadLenBytes.Length;
+        Crlf.CopyTo(span.Slice(offset));
+        offset += Crlf.Length;
+
         if (useHeaders)
         {
-            WriteBytes(HeaderMagic);
-            WriteBytes(ttlBytes!);
-            WriteBytes(HeaderEnd);
+            HeaderMagic.CopyTo(span.Slice(offset));
+            offset += HeaderMagic.Length;
+            ttlBytes.CopyTo(span.Slice(offset));
+            offset += ttlBytes.Length;
+            HeaderEnd.CopyTo(span.Slice(offset));
+            offset += HeaderEnd.Length;
         }
         foreach (var seg in payload)
         {
-            WriteBytes(seg.Span);
+            seg.Span.CopyTo(span.Slice(offset));
+            offset += seg.Span.Length;
         }
-        WriteBytes(Crlf);
+        Crlf.CopyTo(span.Slice(offset));
+        offset += Crlf.Length;
 
         return new OutboundBuffer(buffer, offset, pooled: true);
     }
@@ -791,12 +898,20 @@ public class BrokerConnection
         MsgOut++;
 
         string clientSubject = subject;
-        if (Account != null && !string.IsNullOrEmpty(Account.SubjectPrefix) && subject.StartsWith(Account.SubjectPrefix + "."))
-            clientSubject = subject.Substring(Account.SubjectPrefix.Length + 1);
-
         string? clientReplyTo = replyTo;
-        if (clientReplyTo != null && Account != null && !string.IsNullOrEmpty(Account.SubjectPrefix) && clientReplyTo.StartsWith(Account.SubjectPrefix + "."))
-            clientReplyTo = clientReplyTo.Substring(Account.SubjectPrefix.Length + 1);
+
+        if (Account != null && !string.IsNullOrEmpty(Account.SubjectPrefix))
+        {
+            var prefix = Account.SubjectPrefix;
+            if (subject.Length > prefix.Length && subject.AsSpan().StartsWith(prefix) && subject[prefix.Length] == '.')
+            {
+                clientSubject = subject.Substring(prefix.Length + 1);
+            }
+            if (replyTo != null && replyTo.Length > prefix.Length && replyTo.AsSpan().StartsWith(prefix) && replyTo[prefix.Length] == '.')
+            {
+                clientReplyTo = replyTo.Substring(prefix.Length + 1);
+            }
+        }
 
         if (_protocol == ProtocolType.MQTT)
         {
@@ -809,37 +924,33 @@ public class BrokerConnection
 
         bool useHeaders = ttl.HasValue && SupportsHeaders;
         int headerLen = 0;
-        byte[]? ttlBytes = null;
+        Span<byte> ttlBytes = stackalloc byte[16];
+        int ttlLen = 0;
         if (useHeaders)
         {
-            ttlBytes = GetCachedBytes(((int)ttl!.Value.TotalSeconds).ToString());
-            headerLen = HeaderMagic.Length + ttlBytes.Length + HeaderEnd.Length;
+            Utf8Formatter.TryFormat((int)ttl!.Value.TotalSeconds, ttlBytes, out ttlLen);
+            headerLen = HeaderMagic.Length + ttlLen + HeaderEnd.Length;
         }
 
         int totalPayloadLen = (int)payload.Length + headerLen;
-        byte[] totalPayloadLenBytes = GetCachedBytes(totalPayloadLen.ToString());
+        Span<byte> totPayloadLenBuf = stackalloc byte[16];
+        Utf8Formatter.TryFormat(totalPayloadLen, totPayloadLenBuf, out int totPayloadLenLen);
 
         if (_protocol == ProtocolType.WebSocket)
         {
-            int estimatedSize = 256 + totalPayloadLen;
-            byte[] rented = ArrayPool<byte>.Shared.Rent(estimatedSize);
-            try {
-                using var ms = new MemoryStream(rented);
-                WriteNatsMessageToStream(ms, useHeaders, clientSubject, sid, clientReplyTo, headerLen, totalPayloadLenBytes, ttlBytes, payload);
-                var wsFrame = WebSockets.WebSocketFramer.FrameMessage(rented.AsSpan(0, (int)ms.Position));
-                BytesOut += wsFrame.Length;
-                Interlocked.Add(ref _bytesOutTotal, wsFrame.Length);
-                EnqueueBuffer(wsFrame, wsFrame.Length, pooled: false);
-            } finally {
-                ArrayPool<byte>.Shared.Return(rented);
-            }
+            var outbound = BuildNatsMessage(clientSubject, sid, clientReplyTo, useHeaders, headerLen, totPayloadLenBuf.Slice(0, totPayloadLenLen), ttlBytes.Slice(0, ttlLen), payload);
+            var frame = WebSockets.WebSocketFramer.FrameMessage(outbound.Buffer.AsSpan(0, outbound.Length));
+            BytesOut += frame.Length;
+            Interlocked.Add(ref _bytesOutTotal, frame.Length);
+            EnqueueBuffer(frame, frame.Length, pooled: false);
+            if (outbound.Pooled) ArrayPool<byte>.Shared.Return(outbound.Buffer);
         }
         else
         {
-            var buffer = BuildNatsMessage(clientSubject, sid, clientReplyTo, useHeaders, headerLen, totalPayloadLenBytes, ttlBytes, payload);
-            BytesOut += 50 + totalPayloadLen; 
-            Interlocked.Add(ref _bytesOutTotal, 50 + totalPayloadLen);
-            EnqueueBuffer(buffer.Buffer, buffer.Length, buffer.Pooled);
+            var outbound = BuildNatsMessage(clientSubject, sid, clientReplyTo, useHeaders, headerLen, totPayloadLenBuf.Slice(0, totPayloadLenLen), ttlBytes.Slice(0, ttlLen), payload);
+            BytesOut += outbound.Length;
+            Interlocked.Add(ref _bytesOutTotal, outbound.Length);
+            EnqueueBuffer(outbound.Buffer, outbound.Length, pooled: outbound.Pooled);
         }
 
         if (sub.MaxMsgs.HasValue && sub.ReceivedMsgs >= sub.MaxMsgs.Value)
@@ -850,20 +961,6 @@ public class BrokerConnection
                 if (!sub.IsRemote) _server?.NotifyUnsubscription(sid);
             }
         }
-    }
-
-
-    private void WriteNatsMessageToStream(Stream s, bool useHeaders, string subject, string sid, string? replyTo, int hLen, byte[] totalLenBytes, byte[]? ttlBytes, ReadOnlySequence<byte> payload)
-    {
-        s.Write(useHeaders ? HMsgVerb : MsgVerb);
-        s.Write(GetCachedBytes(subject)); s.Write(Space);
-        s.Write(GetCachedBytes(sid)); s.Write(Space);
-        if (!string.IsNullOrEmpty(replyTo)) { s.Write(GetCachedBytes(replyTo)); s.Write(Space); }
-        if (useHeaders) { s.Write(GetCachedBytes(hLen.ToString())); s.Write(Space); }
-        s.Write(totalLenBytes); s.Write(Crlf);
-        if (useHeaders) { s.Write(HeaderMagic); s.Write(ttlBytes!); s.Write(HeaderEnd); }
-        foreach (var seg in payload) s.Write(seg.Span);
-        s.Write(Crlf);
     }
 
     private void SendError(string message)
