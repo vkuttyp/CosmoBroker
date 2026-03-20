@@ -20,6 +20,7 @@ public class BrokerServer : IAsyncDisposable
     private CancellationTokenSource? _cts;
     private Task? _acceptTask;
     private readonly TopicTree _topicTree = new();
+    private readonly Sublist _sublist = new();
     private readonly Persistence.MessageRepository? _repo;
     private readonly Auth.IAuthenticator? _authenticator;
     private readonly Services.JetStreamService _jetStream;
@@ -32,6 +33,7 @@ public class BrokerServer : IAsyncDisposable
     private long _totalConnections = 0;
     private readonly List<IPEndPoint> _peerEndPoints = new();
     private bool _lameDuckMode = false;
+    public bool UseSublist { get; set; } = true;
 
     public BrokerServer(int port = 4222, Persistence.MessageRepository? repo = null, Auth.IAuthenticator? authenticator = null, X509Certificate2? serverCertificate = null, int monitorPort = 8222)
     {
@@ -104,6 +106,29 @@ public class BrokerServer : IAsyncDisposable
         _cluster.BroadcastSubscription(subject, sid, queueGroup);
         _leafnodes.NotifyLocalSub(subject, sid);
     }
+
+    public void AddSublist(string subject, BrokerConnection conn, string sid, string? queueGroup)
+    {
+        Console.WriteLine($"[Sublist] Adding sub: {subject} sid: {sid}");
+        _sublist.Add(subject, conn, sid, queueGroup);
+    }
+    public void RemoveSublist(string subject, BrokerConnection conn, string sid, string? queueGroup) => _sublist.Remove(subject, conn, sid, queueGroup);
+    public Sublist.SublistResult MatchSublist(string subject)
+    {
+        Span<byte> buf = stackalloc byte[subject.Length * 3];
+        int len = System.Text.Encoding.UTF8.GetBytes(subject, buf);
+        return _sublist.Match(buf.Slice(0, len));
+    }
+    public Sublist.SublistResult MatchSublist(ReadOnlySpan<byte> subject) => _sublist.Match(subject);
+
+    public bool TryMatchSublistLiteral(string subject, out List<Sublist.SubEntry> psubs, out Dictionary<string, Sublist.QueueGroup> qsubs)
+    {
+        Span<byte> buf = stackalloc byte[subject.Length * 3];
+        int len = System.Text.Encoding.UTF8.GetBytes(subject, buf);
+        return _sublist.TryMatchLiteral(buf.Slice(0, len), out psubs, out qsubs);
+    }
+    public bool TryMatchSublistLiteral(ReadOnlySpan<byte> subject, out List<Sublist.SubEntry> psubs, out Dictionary<string, Sublist.QueueGroup> qsubs) => _sublist.TryMatchLiteral(subject, out psubs, out qsubs);
+    public bool SublistHasWildcards => _sublist.HasWildcards;
 
     public void NotifyUnsubscription(string sid)
     {

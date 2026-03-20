@@ -19,6 +19,17 @@ namespace CosmoBroker;
 
 public class BrokerConnection
 {
+    private static readonly bool PerfEnabled =
+        Environment.GetEnvironmentVariable("COSMOBROKER_PERF") == "1";
+    private static readonly long PerfIntervalTicks = Stopwatch.Frequency; // 1 second
+    private static long _perfPubNs;
+    private static long _perfMatchNs;
+    private static long _perfSendNs;
+    private static long _perfPubCount;
+    private static long _perfMatchCount;
+    private static long _perfSendCount;
+    private static long _lastPerfLog;
+
     private const int MaxPayloadBytes = 1048576;
     private const string DefaultNonce = "secure_nonce_12345";
     private readonly Stream _stream;
@@ -72,11 +83,13 @@ public class BrokerConnection
         long.TryParse(Environment.GetEnvironmentVariable("COSMOBROKER_MAX_BUFFER_BYTES"), out var maxBuf)
             ? maxBuf
             : 512L * 1024 * 1024; // 512MB default backpressure limit
+    private static readonly long SoftLimitBytes = MaxBufferedBytes / 2;
     private const int SendBatchBytes = 64 * 1024;
     private const int SendBatchMaxItems = 128;
 
     // Optimization: Per-connection byte cache for strings to avoid re-encoding
     private readonly ConcurrentDictionary<string, byte[]> _stringByteCache = new();
+    private static readonly ThreadLocal<L1MatchCache> MatchCache = new(() => new L1MatchCache());
 
     public object GetStats() => new {
         protocol = _protocol.ToString(),
@@ -97,6 +110,7 @@ public class BrokerConnection
         public int? MaxMsgs { get; set; }
         public int ReceivedMsgs { get; set; }
         public bool IsRemote { get; set; } = false;
+        public byte[]? CachedPrefix { get; set; }
     }
 
     private readonly ConcurrentDictionary<string, Subscription> _subscriptions = new();
@@ -232,6 +246,7 @@ public class BrokerConnection
 
     private bool ProcessPubPayload(ref ReadOnlySequence<byte> buffer, SequencePosition linePosition, ReadOnlySpan<byte> subject, ReadOnlySpan<byte> replyTo, int totalLength, int headerLen, bool isHPub)
     {
+        var pubStart = PerfEnabled ? Stopwatch.GetTimestamp() : 0L;
         var payloadStart = buffer.GetPosition(1, linePosition);
         var remaining = buffer.Slice(payloadStart);
 
@@ -249,22 +264,84 @@ public class BrokerConnection
         if (remaining.Length >= totalLength + 2)
         {
             var fullPayload = remaining.Slice(0, totalLength);
+            string? replyToStr = replyTo.IsEmpty ? null : GetCachedSubjectString(replyTo);
             
-            // Optimization: Fast path for TopicTree
             if (!isHPub && _jetStream.HasStreams == false && (Account == null || string.IsNullOrEmpty(Account.SubjectPrefix)))
             {
-                string? replyToStr = replyTo.IsEmpty ? null : Encoding.UTF8.GetString(replyTo);
-                _topicTree.Publish(subject, fullPayload, replyToStr, this);
+                var l1 = MatchCache.Value!;
+                var (res, dhSubjectStr) = l1.Get(subject);
+                
+                if (res == null)
+                {
+                    if (_server!.SublistHasWildcards == false &&
+                        _server.TryMatchSublistLiteral(subject, out var dhLpsubs, out var dhLqsubs))
+                    {
+                        res = new Sublist.SublistResult();
+                        res.Psubs.AddRange(dhLpsubs);
+                        foreach(var q in dhLqsubs.Values) res.Qsubs.Add(q);
+                    }
+                    else
+                    {
+                        res = _server.MatchSublist(subject);
+                    }
+                    dhSubjectStr = GetCachedSubjectString(subject);
+                    l1.Set(subject, res, dhSubjectStr);
+                }
+
+                if (res.Qsubs.Count == 0)
+                {
+                    var m0 = PerfEnabled ? Stopwatch.GetTimestamp() : 0L;
+                    if (res.Psubs.Count == 0)
+                    {
+                        // Fallback to topic tree
+                        _topicTree.Publish(subject, fullPayload, replyToStr, this);
+                    }
+                    else
+                    {
+                        // Direct handoff for non-queue subscriptions
+                        bool accepted = true;
+                        foreach (var sub in res.Psubs)
+                        {
+                            if (sub.Conn == this && NoEcho) continue;
+                            if ((IsRoute || IsLeaf) && (sub.Conn.IsRoute || sub.Conn.IsLeaf)) continue;
+                            if (!sub.Conn.SendMessageWithTTL(dhSubjectStr!, sub.Sid, fullPayload, replyToStr, null))
+                            {
+                                accepted = false;
+                            }
+                        }
+                        
+                        // If any consumer is slow, slow down this producer
+                        if (!accepted)
+                        {
+                            Thread.SpinWait(100);
+                        }
+                    }
+                    if (PerfEnabled)
+                    {
+                        Interlocked.Add(ref _perfMatchNs, ElapsedNs(m0));
+                        Interlocked.Increment(ref _perfMatchCount);
+                    }
+                }
+                else
+                {
+                    // Complex matching or queue groups: fallback to original path for now
+                    _topicTree.Publish(subject, fullPayload, replyToStr, this);
+                }
             }
             else
             {
-                string subjectStr = Encoding.UTF8.GetString(subject);
-                string? replyToStr = replyTo.IsEmpty ? null : Encoding.UTF8.GetString(replyTo);
+                string subjectStr = GetCachedSubjectString(subject);
                 if (isHPub) HandleHPub(subjectStr, replyToStr, headerLen, fullPayload);
                 else HandlePub(subjectStr, replyToStr, fullPayload);
             }
 
             buffer = remaining.Slice(totalLength + 2);
+            if (PerfEnabled)
+            {
+                Interlocked.Add(ref _perfPubNs, ElapsedNs(pubStart));
+                Interlocked.Increment(ref _perfPubCount);
+                MaybeLogPerf();
+            }
             return true;
         }
         return false;
@@ -597,6 +674,8 @@ public class BrokerConnection
         var sub = new Subscription { Subject = scopedSubject, QueueGroup = queueGroup, IsRemote = isRemote };
         _subscriptions[sid] = sub;
         _topicTree.Subscribe(scopedSubject, this, sid, queueGroup);
+        if (_server?.UseSublist == true) _server.AddSublist(scopedSubject, this, sid, queueGroup);
+        
         if (!isRemote)
         {
             _server?.NotifySubscription(scopedSubject, sid, queueGroup);
@@ -626,6 +705,7 @@ public class BrokerConnection
             else if (_subscriptions.TryRemove(sid, out _))
             {
                 _topicTree.Unsubscribe(sub.Subject, this, sid, sub.QueueGroup);
+                if (_server?.UseSublist == true) _server.RemoveSublist(sub.Subject, this, sid, sub.QueueGroup);
                 if (!sub.IsRemote) _server?.NotifyUnsubscription(sid);
             }
         }
@@ -887,16 +967,17 @@ public class BrokerConnection
         return new OutboundBuffer(buffer, offset, pooled: true);
     }
 
-    public void SendMessageWithTTL(string subject, string sid, ReadOnlySequence<byte> payload, string? replyTo, TimeSpan? ttl)
+    public bool SendMessageWithTTL(string subject, string sid, ReadOnlySequence<byte> payload, string? replyTo, TimeSpan? ttl)
     {
         if (!_subscriptions.TryGetValue(sid, out var sub))
         {
-            return;
+            return true;
         }
-        if (Interlocked.Read(ref _pendingBytes) > MaxBufferedBytes)
+        var pending = Interlocked.Read(ref _pendingBytes);
+        if (pending > MaxBufferedBytes)
         {
             Interlocked.Increment(ref _droppedMsgs);
-            return;
+            return false;
         }
         sub.ReceivedMsgs++;
         MsgOut++;
@@ -923,7 +1004,7 @@ public class BrokerConnection
             BytesOut += frame.Length;
             Interlocked.Add(ref _bytesOutTotal, frame.Length);
             EnqueueBuffer(frame, frame.Length, pooled: false);
-            return;
+            return pending < SoftLimitBytes;
         }
 
         bool useHeaders = ttl.HasValue && SupportsHeaders;
@@ -951,10 +1032,46 @@ public class BrokerConnection
         }
         else
         {
-            var outbound = BuildNatsMessage(clientSubject, sid, clientReplyTo, useHeaders, headerLen, totPayloadLenBuf.Slice(0, totPayloadLenLen), ttlBytes.Slice(0, ttlLen), payload);
-            BytesOut += outbound.Length;
-            Interlocked.Add(ref _bytesOutTotal, outbound.Length);
-            EnqueueBuffer(outbound.Buffer, outbound.Length, pooled: outbound.Pooled);
+            // Optimization: Fast path using CachedPrefix
+            if (!useHeaders && string.IsNullOrEmpty(clientReplyTo))
+            {
+                var prefix = sub.CachedPrefix;
+                if (prefix == null)
+                {
+                    var subjBytes = Encoding.UTF8.GetBytes(clientSubject);
+                    var sidBytes = Encoding.UTF8.GetBytes(sid);
+                    // "MSG " + subj + " " + sid + " "
+                    int psize = 4 + subjBytes.Length + 1 + sidBytes.Length + 1;
+                    prefix = new byte[psize];
+                    "MSG "u8.CopyTo(prefix);
+                    subjBytes.CopyTo(prefix.AsSpan(4));
+                    prefix[4 + subjBytes.Length] = (byte)' ';
+                    sidBytes.CopyTo(prefix.AsSpan(4 + subjBytes.Length + 1));
+                    prefix[psize - 1] = (byte)' ';
+                    sub.CachedPrefix = prefix;
+                }
+
+                int totalLen = prefix.Length + totPayloadLenLen + 2 + (int)payload.Length + 2;
+                var buffer = ArrayPool<byte>.Shared.Rent(totalLen);
+                var span = buffer.AsSpan();
+                int offset = 0;
+                prefix.CopyTo(span.Slice(offset)); offset += prefix.Length;
+                totPayloadLenBuf.Slice(0, totPayloadLenLen).CopyTo(span.Slice(offset)); offset += totPayloadLenLen;
+                "\r\n"u8.CopyTo(span.Slice(offset)); offset += 2;
+                foreach (var seg in payload) { seg.Span.CopyTo(span.Slice(offset)); offset += seg.Span.Length; }
+                "\r\n"u8.CopyTo(span.Slice(offset)); offset += 2;
+
+                BytesOut += offset;
+                Interlocked.Add(ref _bytesOutTotal, offset);
+                EnqueueBuffer(buffer, offset, pooled: true);
+            }
+            else
+            {
+                var outbound = BuildNatsMessage(clientSubject, sid, clientReplyTo, useHeaders, headerLen, totPayloadLenBuf.Slice(0, totPayloadLenLen), ttlBytes.Slice(0, ttlLen), payload);
+                BytesOut += outbound.Length;
+                Interlocked.Add(ref _bytesOutTotal, outbound.Length);
+                EnqueueBuffer(outbound.Buffer, outbound.Length, pooled: outbound.Pooled);
+            }
         }
 
         if (sub.MaxMsgs.HasValue && sub.ReceivedMsgs >= sub.MaxMsgs.Value)
@@ -965,6 +1082,7 @@ public class BrokerConnection
                 if (!sub.IsRemote) _server?.NotifyUnsubscription(sid);
             }
         }
+        return pending < SoftLimitBytes;
     }
 
     private void SendError(string message)
@@ -1011,5 +1129,137 @@ public class BrokerConnection
         _subscriptions.Clear();
         _sendQueue.Writer.TryComplete();
         try { _stream.Close(); } catch { }
+    }
+
+    private static readonly ThreadLocal<SubjectStringCache> SubjectCache = new(() => new SubjectStringCache());
+
+    private static string GetCachedSubjectString(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.IsEmpty) return string.Empty;
+        return SubjectCache.Value!.Get(bytes);
+    }
+
+    private sealed class SubjectStringCache
+    {
+        private const int Capacity = 4096;
+        private const int Probe = 4;
+        private readonly Entry[] _entries = new Entry[Capacity];
+        private int _next;
+
+        private struct Entry
+        {
+            public int Hash;
+            public byte[]? Bytes;
+            public string? Value;
+        }
+
+        public string Get(ReadOnlySpan<byte> bytes)
+        {
+            int hash = Hash(bytes);
+            int idx = hash & (Capacity - 1);
+            for (int i = 0; i < Probe; i++)
+            {
+                var e = _entries[(idx + i) & (Capacity - 1)];
+                if (e.Bytes == null || e.Hash != hash) continue;
+                if (bytes.SequenceEqual(e.Bytes)) return e.Value!;
+            }
+
+            var s = Encoding.UTF8.GetString(bytes);
+            var copy = new byte[bytes.Length];
+            bytes.CopyTo(copy);
+            _entries[_next & (Capacity - 1)] = new Entry { Hash = hash, Bytes = copy, Value = s };
+            _next++;
+            return s;
+        }
+
+        private static int Hash(ReadOnlySpan<byte> bytes)
+        {
+            unchecked
+            {
+                const int fnvOffset = unchecked((int)2166136261);
+                const int fnvPrime = 16777619;
+                int hash = fnvOffset;
+                for (int i = 0; i < bytes.Length; i++)
+                {
+                    hash ^= bytes[i];
+                    hash *= fnvPrime;
+                }
+                return hash;
+            }
+        }
+    }
+
+    private long ElapsedNs(long start) => (long)((Stopwatch.GetTimestamp() - start) * (1_000_000_000.0 / Stopwatch.Frequency));
+
+    private void MaybeLogPerf()
+    {
+        var now = Stopwatch.GetTimestamp();
+        if (now - _lastPerfLog < PerfIntervalTicks) return;
+        if (Interlocked.Exchange(ref _lastPerfLog, now) > now - PerfIntervalTicks) return;
+
+        var pubs = Interlocked.Exchange(ref _perfPubCount, 0);
+        var pubNs = Interlocked.Exchange(ref _perfPubNs, 0);
+        var mcnt = Interlocked.Exchange(ref _perfMatchCount, 0);
+        var mns = Interlocked.Exchange(ref _perfMatchNs, 0);
+        var scnt = Interlocked.Exchange(ref _perfSendCount, 0);
+        var sns = Interlocked.Exchange(ref _perfSendNs, 0);
+
+        double pubUs = pubs == 0 ? 0 : pubNs / 1000.0 / pubs;
+        double matchUs = mcnt == 0 ? 0 : mns / 1000.0 / mcnt;
+        double sendUs = scnt == 0 ? 0 : sns / 1000.0 / scnt;
+
+        Console.WriteLine($"[Perf] pub_us={pubUs:F2} match_us={matchUs:F2} send_us={sendUs:F2} count={pubs}");
+    }
+
+    private sealed class L1MatchCache
+    {
+        private const int Capacity = 1024;
+        private readonly Entry[] _entries = new Entry[Capacity];
+        private int _next;
+
+        private struct Entry
+        {
+            public int Hash;
+            public byte[]? Bytes;
+            public Sublist.SublistResult? Result;
+            public string? SubjectStr;
+        }
+
+        public (Sublist.SublistResult? Result, string? SubjectStr) Get(ReadOnlySpan<byte> bytes)
+        {
+            int hash = Hash(bytes);
+            int idx = hash & (Capacity - 1);
+            var e = _entries[idx];
+            if (e.Bytes != null && e.Hash == hash && bytes.SequenceEqual(e.Bytes))
+            {
+                return (e.Result, e.SubjectStr);
+            }
+            return (null, null);
+        }
+
+        public void Set(ReadOnlySpan<byte> bytes, Sublist.SublistResult result, string subjectStr)
+        {
+            int hash = Hash(bytes);
+            int idx = hash & (Capacity - 1);
+            var copy = new byte[bytes.Length];
+            bytes.CopyTo(copy);
+            _entries[idx] = new Entry { Hash = hash, Bytes = copy, Result = result, SubjectStr = subjectStr };
+        }
+
+        private static int Hash(ReadOnlySpan<byte> bytes)
+        {
+            unchecked
+            {
+                const int fnvOffset = unchecked((int)2166136261);
+                const int fnvPrime = 16777619;
+                int hash = fnvOffset;
+                for (int i = 0; i < bytes.Length; i++)
+                {
+                    hash ^= bytes[i];
+                    hash *= fnvPrime;
+                }
+                return hash;
+            }
+        }
     }
 }
