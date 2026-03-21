@@ -14,10 +14,17 @@ CosmoBroker is optimized for high-throughput and low-latency workloads. In stand
 | Metric | Official NATS (Docker) | **CosmoBroker (Native)** |
 | :--- | :---: | :---: |
 | **Throughput (PUB)** | ~1,016,000 msg/sec | **~1,222,000 msg/sec** |
-| **Average Latency (RTT)** | 0.183 ms | **0.071 ms** |
-| **Minimum Latency** | 0.122 ms | **0.027 ms** |
+| **Average Latency (RTT)** | 0.183 ms | **0.070 ms** |
+| **Minimum Latency** | 0.122 ms | **0.020 ms** |
 
 ---
+
+### v1.1.0 Ultra-Performance Architecture
+The latest release (v1.1.0) introduces a redesigned core engine:
+- **Zero-Allocation Hot Path**: Subjects and subscription metadata are handled via `ReadOnlySpan<T>`, eliminating heap allocations during message delivery.
+- **Gathering I/O**: High-volume egress utilizes `Socket.SendAsync` with `IList<ArraySegment<byte>>` to minimize syscall overhead.
+- **Lock-Free Wildcard Matching**: Lock contention is removed via volatile wildcard counters and versioned matching caches.
+- **Global Batch Flush**: Optimized fan-out engine that batches outbound flushes for maximum throughput.
 
 ### SQLite JetStream Tuning (Safe Profile)
 For SQLite persistence, JetStream writes are batched for durable throughput. You can tune batching via:
