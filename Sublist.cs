@@ -51,8 +51,16 @@ public sealed class Sublist
     private readonly Dictionary<byte[], Node> _literal = new(new ReadOnlySpanByteComparer());
     private readonly Dictionary<string, int> _wildcardSubjects = new(StringComparer.Ordinal);
     private readonly System.Threading.ReaderWriterLockSlim _mu = new();
-    private long _version = 1;
+    private static long _globalVersion = 0;
+    private long _version;
     public long Version => System.Threading.Volatile.Read(ref _version);
+
+    public Sublist()
+    {
+        // Start each instance at a unique version so ThreadLocal MatchCaches
+        // from previous instances (e.g. in tests) never produce stale hits.
+        _version = System.Threading.Interlocked.Add(ref _globalVersion, 1024);
+    }
     private int _wildcardCount = 0;
 
     private const int CacheMax = 4096;

@@ -263,10 +263,13 @@ public class BrokerConnection
 
         if (remaining.Length >= totalLength + 2)
         {
+            if (!_isAuthenticated) { SendError("Authorization Violation"); buffer = remaining.Slice(totalLength + 2); return true; }
+
             var fullPayload = remaining.Slice(0, totalLength);
             string? replyToStr = replyTo.IsEmpty ? null : GetCachedSubjectString(replyTo);
-            
-            if (!isHPub && _jetStream.HasStreams == false && (Account == null || string.IsNullOrEmpty(Account.SubjectPrefix)))
+
+            if (!isHPub && _jetStream.HasStreams == false && (Account == null || string.IsNullOrEmpty(Account.SubjectPrefix))
+                && !(subject.Length >= 4 && subject[0] == '$' && (subject[1] | 0x20) == 'j' && (subject[2] | 0x20) == 's' && subject[3] == '.'))
             {
                 var l1 = MatchCache.Value!;
                 long subVersion = _server!.SublistVersion;
