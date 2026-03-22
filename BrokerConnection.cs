@@ -405,40 +405,55 @@ public class BrokerConnection
 
                         if ((lineSpan[0] | 0x20) == 'm' && (IsRoute || IsLeaf))
                         {
-                            string lineStr = Encoding.UTF8.GetString(lineSpan).TrimEnd('\r');
-                            var parts = lineStr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                            if (parts.Length > 0 && (parts[0].Equals("MSG", StringComparison.OrdinalIgnoreCase) || parts[0].Equals("HMSG", StringComparison.OrdinalIgnoreCase)))
+                            // Span-based parse: MSG <subject> <sid> [reply-to] <#bytes>
+                            // Avoids full-line UTF8 decode + string.Split allocation.
+                            var msgLine = lineSpan[lineSpan.Length - 1] == '\r'
+                                ? lineSpan.Slice(0, lineSpan.Length - 1)
+                                : lineSpan;
+
+                            if (msgLine.Length > 4) // at minimum "MSG x"
                             {
-                                bool isHMsg = parts[0].Equals("HMSG", StringComparison.OrdinalIgnoreCase);
-                                int lastIdx = parts.Length - 1;
-                                if (int.TryParse(parts[lastIdx], out int totalLength))
+                                var tok = msgLine.Slice(4); // skip "MSG "
+                                int sp1 = tok.IndexOf((byte)' ');
+                                if (sp1 != -1)
                                 {
-                                    int headerLen = isHMsg ? int.Parse(parts[lastIdx - 1]) : 0;
-                                    var payloadStart = buffer.GetPosition(1, linePosition.Value);
-                                    var remaining = buffer.Slice(payloadStart);
+                                    var subjectBytes = tok.Slice(0, sp1);
+                                    tok = tok.Slice(sp1 + 1);
 
-                                    if (remaining.Length >= totalLength + 2)
+                                    int sp2 = tok.IndexOf((byte)' '); // skip sid
+                                    if (sp2 != -1)
                                     {
-                                        var fullPayload = remaining.Slice(0, totalLength);
-                                        string subject = parts[1];
-                                        string? replyTo = null;
-                                        if (isHMsg)
-                                        {
-                                            if (parts.Length == 6) replyTo = parts[3];
-                                            HandleHPub(subject, replyTo, headerLen, fullPayload);
-                                        }
-                                        else
-                                        {
-                                            if (parts.Length == 5) replyTo = parts[3];
-                                            HandlePub(subject, replyTo, fullPayload);
-                                        }
+                                        tok = tok.Slice(sp2 + 1);
 
-                                        buffer = remaining.Slice(totalLength + 2);
-                                        continue;
+                                        // Remaining: [reply-to] <#bytes>
+                                        int lastSp = tok.LastIndexOf((byte)' ');
+                                        var lenBytes = lastSp == -1 ? tok : tok.Slice(lastSp + 1);
+
+                                        if (Utf8Parser.TryParse(lenBytes, out int totalLength, out _))
+                                        {
+                                            var payloadStart = buffer.GetPosition(1, linePosition.Value);
+                                            var remaining = buffer.Slice(payloadStart);
+
+                                            if (remaining.Length >= totalLength + 2)
+                                            {
+                                                string subject = Encoding.UTF8.GetString(subjectBytes);
+                                                string? replyTo = lastSp != -1
+                                                    ? Encoding.UTF8.GetString(tok.Slice(0, lastSp))
+                                                    : null;
+
+                                                HandlePub(subject, replyTo, remaining.Slice(0, totalLength));
+                                                buffer = remaining.Slice(totalLength + 2);
+                                                continue;
+                                            }
+                                            else break;
+                                        }
                                     }
-                                    else break;
                                 }
                             }
+
+                            // Malformed line — skip past newline
+                            buffer = buffer.Slice(buffer.GetPosition(1, linePosition.Value));
+                            continue;
                         }
 
                         if ((lineSpan[0] | 0x20) == 'p' && (lineSpan[1] | 0x20) == 'u' && (lineSpan[2] | 0x20) == 'b' && (lineSpan[3] == ' ' || lineSpan[3] == '\r'))
@@ -819,15 +834,28 @@ public class BrokerConnection
                 }
                 if (scopedSubject.StartsWith("$JS.ACK.", StringComparison.OrdinalIgnoreCase))
                 {
-                    var parts = scopedSubject.Split('.');
-                    if (parts.Length >= 6 && long.TryParse(parts[5], out long seq))
+                    // Format: $JS.ACK.<streamName>.<consumerName>.<sequence>
+                    // Span-based parse — no Split allocation.
+                    var ackSpan = scopedSubject.AsSpan(8); // skip "$JS.ACK."
+                    int d1 = ackSpan.IndexOf('.');
+                    if (d1 != -1)
                     {
-                        if (payload.Length > 0) {
-                            var pStr = Encoding.UTF8.GetString(payload.ToArray()).Trim();
-                            if (pStr.StartsWith("-NAK")) _jetStream.Nack(parts[2], parts[3], seq);
-                            else if (pStr.StartsWith("+TERM")) _jetStream.Term(parts[2], parts[3], seq);
-                            else _jetStream.Ack(parts[2], parts[3], seq);
-                        } else _jetStream.Ack(parts[2], parts[3], seq);
+                        string streamName = ackSpan.Slice(0, d1).ToString();
+                        var rest = ackSpan.Slice(d1 + 1);
+                        int d2 = rest.IndexOf('.');
+                        if (d2 != -1)
+                        {
+                            string consumerName = rest.Slice(0, d2).ToString();
+                            if (long.TryParse(rest.Slice(d2 + 1), out long seq))
+                            {
+                                if (payload.Length > 0) {
+                                    var pStr = Encoding.UTF8.GetString(payload.ToArray()).Trim();
+                                    if (pStr.StartsWith("-NAK")) _jetStream.Nack(streamName, consumerName, seq);
+                                    else if (pStr.StartsWith("+TERM")) _jetStream.Term(streamName, consumerName, seq);
+                                    else _jetStream.Ack(streamName, consumerName, seq);
+                                } else _jetStream.Ack(streamName, consumerName, seq);
+                            }
+                        }
                     }
                     return;
                 }
