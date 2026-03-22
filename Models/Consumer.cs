@@ -74,6 +74,10 @@ namespace CosmoBroker.JetStream.Models
         // null means ">" (match everything).
         public readonly string[]? FilterTokens;
 
+        // Pre-built ack reply prefix: "$JS.ACK.{streamName}.{name}."
+        // Only the sequence number is appended per message.
+        public string AckReplyPrefix = string.Empty;
+
         public Consumer(string name, string streamName, ConsumerConfig config)
         {
             Name = name;

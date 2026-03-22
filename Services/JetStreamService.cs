@@ -60,6 +60,7 @@ namespace CosmoBroker.Services
         {
             if (_streams.TryGetValue(consumer.StreamName, out var stream))
             {
+                consumer.AckReplyPrefix = $"$JS.ACK.{stream.Name}.{consumer.Name}.";
                 stream.Consumers.Add(consumer);
                 
                 if (_repo != null)
@@ -96,7 +97,7 @@ namespace CosmoBroker.Services
             var msg = stream.AddMessage(subject, payload, ttl);
             if (sequence > 0) msg.Sequence = sequence;
 
-            await BroadcastToConsumers(stream, msg);
+            BroadcastToConsumers(stream, msg);
 
             // Mirror and Source propagation (best-effort, in-memory)
             foreach (var target in _streams.Values)
@@ -109,7 +110,7 @@ namespace CosmoBroker.Services
             }
         }
 
-        private async Task BroadcastToConsumers(JetStreamEntity stream, StreamMessage msg)
+        private void BroadcastToConsumers(JetStreamEntity stream, StreamMessage msg)
         {
             foreach (var consumer in stream.Consumers)
             {
@@ -121,25 +122,24 @@ namespace CosmoBroker.Services
                         continue;
                     }
 
-                    await DeliverMessage(consumer, stream, msg);
+                    DeliverMessage(consumer, stream, msg);
                 }
             }
         }
 
-        private async Task DeliverMessage(Consumer consumer, JetStreamEntity stream, StreamMessage msg)
+        private void DeliverMessage(Consumer consumer, JetStreamEntity stream, StreamMessage msg)
         {
-            string ackReply = $"$JS.ACK.{stream.Name}.{consumer.Name}.{msg.Sequence}";
-            
             TimeSpan? remainingTtl = null;
             if (msg.ExpiresAt.HasValue)
             {
                 remainingTtl = msg.ExpiresAt.Value - DateTime.UtcNow;
-                if (remainingTtl.Value.TotalSeconds <= 0) return; // Expired already
+                if (remainingTtl.Value.TotalSeconds <= 0) return;
             }
 
             if (consumer.Config.AckPolicy != AckPolicy.None && consumer.InFlight.Count >= consumer.Config.MaxAckPending)
                 return;
 
+            string ackReply = string.Concat(consumer.AckReplyPrefix, msg.Sequence.ToString());
             _topicTree.PublishWithTTL(consumer.DeliverSubject ?? "", new System.Buffers.ReadOnlySequence<byte>(msg.Payload), ackReply, remainingTtl);
 
             consumer.LastDeliveredSeq = msg.Sequence;
@@ -160,19 +160,15 @@ namespace CosmoBroker.Services
 
             while (consumer.PendingPullRequests.TryPeek(out var req))
             {
-                var missed = stream.Messages
-                    .Where(m => m.Sequence > consumer.LastDeliveredSeq && SubjectMatchesTokens(consumer.FilterTokens, m.Subject))
-                    .Take(req.Count)
-                    .ToList();
-
-                if (missed.Count == 0) break;
-
-                consumer.PendingPullRequests.TryDequeue(out _);
-
-                foreach (var msg in missed)
+                int found = 0;
+                foreach (var msg in stream.Messages)
                 {
-                    string ackReply = $"$JS.ACK.{stream.Name}.{consumer.Name}.{msg.Sequence}";
-                    
+                    if (found == req.Count) break;
+                    if (msg.Sequence <= consumer.LastDeliveredSeq) continue;
+                    if (!SubjectMatchesTokens(consumer.FilterTokens, msg.Subject)) continue;
+
+                    found++;
+
                     TimeSpan? remainingTtl = null;
                     if (msg.ExpiresAt.HasValue)
                     {
@@ -180,8 +176,9 @@ namespace CosmoBroker.Services
                         if (remainingTtl.Value.TotalSeconds <= 0) continue;
                     }
 
+                    string ackReply = string.Concat(consumer.AckReplyPrefix, msg.Sequence.ToString());
                     _topicTree.PublishWithTTL(req.ReplyTo, new System.Buffers.ReadOnlySequence<byte>(msg.Payload), ackReply, remainingTtl);
-                    
+
                     consumer.LastDeliveredSeq = msg.Sequence;
                     if (consumer.Config.AckPolicy != AckPolicy.None)
                     {
@@ -196,17 +193,18 @@ namespace CosmoBroker.Services
                         stream.RemoveMessage(msg.Sequence);
                     }
                 }
+
+                if (found == 0) break;
+                consumer.PendingPullRequests.TryDequeue(out _);
             }
         }
 
         private void ReplayMissedMessages(Consumer consumer, JetStreamEntity stream)
         {
-            var missed = stream.Messages
-                .Where(m => m.Sequence > consumer.LastDeliveredSeq && SubjectMatchesTokens(consumer.FilterTokens, m.Subject));
-
-            foreach (var msg in missed)
+            foreach (var msg in stream.Messages)
             {
-                _ = DeliverMessage(consumer, stream, msg);
+                if (msg.Sequence > consumer.LastDeliveredSeq && SubjectMatchesTokens(consumer.FilterTokens, msg.Subject))
+                    DeliverMessage(consumer, stream, msg);
             }
         }
 
@@ -305,7 +303,7 @@ namespace CosmoBroker.Services
                     return;
                 }
 
-                _ = DeliverMessage(consumer, stream, msg);
+                DeliverMessage(consumer, stream, msg);
             }
         }
 
@@ -416,7 +414,7 @@ namespace CosmoBroker.Services
                                         consumer.InFlight.TryRemove(msg.Sequence, out _);
                                         continue;
                                     }
-                                    _ = DeliverMessage(consumer, stream, msg);
+                                    DeliverMessage(consumer, stream, msg);
                                     msg.Timestamp = DateTime.UtcNow; 
                                 }
                             }
