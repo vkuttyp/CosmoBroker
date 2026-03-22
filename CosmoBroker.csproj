@@ -3,7 +3,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>1.0.8</Version>
+    <Version>1.0.9</Version>
     <Authors>Kutty</Authors>
     <Description>High-performance, NATS-compatible distributed messaging engine with native SQL persistence.</Description>
     <PackageProjectUrl>https://github.com/vkuttyp/CosmoBroker</PackageProjectUrl>
