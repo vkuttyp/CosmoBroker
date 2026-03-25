@@ -58,8 +58,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/cosmobroker:${{ steps.version.outputs.tag }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/cosmobroker:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/cosmobroker-server:${{ steps.version.outputs.tag }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/cosmobroker-server:latest
           # Layer cache persisted across runs — speeds up repeated builds.
           cache-from: type=gha
           cache-to: type=gha,mode=max
