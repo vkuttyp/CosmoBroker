@@ -36,7 +36,7 @@ CosmoBroker does not currently ship a separate custom AMQP client SDK. For AMQP 
 
 CosmoBroker now exposes a native AMQP port in addition to its NATS listener. That means you can point standard RabbitMQ client libraries at CosmoBroker and run common queue workflows without using a custom adapter.
 
-For a deeper guide focused on AMQP setup, compatibility, authentication, and benchmarking, see [docs/rabbitmq.md](/Users/kutty/dev/CosmoBroker/docs/rabbitmq.md).
+For a deeper guide focused on AMQP setup, compatibility, authentication, and benchmarking, see [docs/rabbitmq.md](docs/rabbitmq.md).
 
 Currently covered in the native AMQP path:
 
@@ -259,7 +259,7 @@ SQLite works well for local development and benchmarking. The repository abstrac
 
 CosmoBroker includes benchmark modes for NATS, RabbitMQ-style `$RMQ.*` flows, native AMQP, and side-by-side RabbitMQ comparisons.
 
-For a benchmark-focused write-up with current numbers and reproduction steps, see [docs/performance.md](/Users/kutty/dev/CosmoBroker/docs/performance.md).
+For a benchmark-focused write-up with current numbers and reproduction steps, see [docs/performance.md](docs/performance.md).
 
 ### Compare CosmoBroker vs RabbitMQ
 
@@ -273,7 +273,7 @@ This script:
 
 - starts a local CosmoBroker instance with native AMQP enabled
 - runs the standard `RabbitMQ.Client` scenario comparison
-- writes the output to [benchmarks/amqp-compare-report.txt](/Users/kutty/dev/CosmoBroker/benchmarks/amqp-compare-report.txt)
+- writes the output to [benchmarks/amqp-compare-report.txt](benchmarks/amqp-compare-report.txt)
 
 ### Run The Comparison Matrix
 

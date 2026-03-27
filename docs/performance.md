@@ -15,7 +15,7 @@ CosmoBroker includes two different kinds of AMQP benchmark tooling:
 
 ## Latest Functional Comparison Snapshot
 
-Source report: [benchmarks/amqp-compare-report.txt](/Users/kutty/dev/CosmoBroker/benchmarks/amqp-compare-report.txt)
+Source report: [benchmarks/amqp-compare-report.txt](../benchmarks/amqp-compare-report.txt)
 
 Latest recorded scripted run:
 
@@ -176,8 +176,8 @@ Based on the latest documented comparison state in this repo:
 
 ## Useful Files
 
-- [README.md](/Users/kutty/dev/CosmoBroker/README.md)
-- [docs/rabbitmq.md](/Users/kutty/dev/CosmoBroker/docs/rabbitmq.md)
-- [benchmarks/compare_amqp.sh](/Users/kutty/dev/CosmoBroker/benchmarks/compare_amqp.sh)
-- [benchmarks/amqp-compare-report.txt](/Users/kutty/dev/CosmoBroker/benchmarks/amqp-compare-report.txt)
-- [CosmoBroker.Benchmarks/Program.cs](/Users/kutty/dev/CosmoBroker/CosmoBroker.Benchmarks/Program.cs)
+- [README.md](../README.md)
+- [docs/rabbitmq.md](rabbitmq.md)
+- [benchmarks/compare_amqp.sh](../benchmarks/compare_amqp.sh)
+- [benchmarks/amqp-compare-report.txt](../benchmarks/amqp-compare-report.txt)
+- [CosmoBroker.Benchmarks/Program.cs](../CosmoBroker.Benchmarks/Program.cs)
