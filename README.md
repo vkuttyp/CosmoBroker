@@ -6,6 +6,7 @@ CosmoBroker is a high-performance .NET broker with first-class NATS support and 
 
 - NATS-compatible core messaging on port `4222` by default
 - Native AMQP 0-9-1 listener for standard RabbitMQ clients
+- Native RabbitMQ Stream listener for standard RabbitMQ stream clients
 - RabbitMQ-style queues, exchanges, bindings, confirms, transactions, redelivery, and durable message flow
 - JetStream-style persistence and stream features backed by SQLite/SQL
 - MQTT and WebSocket protocol support
@@ -27,6 +28,7 @@ CosmoBroker does not currently ship a separate custom AMQP client SDK. For AMQP 
 |---|---|---|
 | NATS protocol | Supported | Standard pub/sub, request/reply, queue groups |
 | AMQP 0-9-1 | Supported | Native listener for `RabbitMQ.Client` and compatible clients |
+| RabbitMQ Stream protocol | Supported | Native listener for `RabbitMQ.Stream.Client` and compatible clients |
 | RabbitMQ-style queues | Supported | Exchanges, queues, bindings, acks, nacks, reject, qos, confirms, tx, get, consume |
 | JetStream-style persistence | Supported | Streams, consumers, mirrors, sources |
 | MQTT 3.1.1 | Supported | Protocol sniffing path |
@@ -58,11 +60,13 @@ Currently covered in the native AMQP path:
 - stream retention via `x-max-length`, `x-max-length-bytes`, and `x-max-age`
 - persisted stream consumer resume and management-visible stream lag
 - a first partitioned stream foundation via `x-super-stream` with `x-partitions`
+- native RabbitMQ Stream protocol for create/delete stream, publish, subscribe, offset store/query, metadata, route, partitions, stream stats, and single-active-consumer
+- official `RabbitMQ.Stream.Client` interop for stream, super-stream, and single-active-consumer flows
 
 Current RabbitMQ gap areas are mostly advanced product features rather than core AMQP correctness:
 
 - quorum queues
-- full RabbitMQ streams parity beyond the current AMQP stream and super-stream foundation
+- full RabbitMQ streams parity beyond the current native stream listener and super-stream foundation
 - policies / operator policies
 - clustering and replication parity with RabbitMQ
 - plugin ecosystem parity
@@ -96,6 +100,25 @@ This enables the native RabbitMQ-compatible listener on `5672`.
 ```bash
 COSMOBROKER_ENABLE_AMQP=true \
 COSMOBROKER_AMQP_PORT=5672 \
+dotnet run --project CosmoBroker.Server/CosmoBroker.Server.csproj
+```
+
+### Run With Native RabbitMQ Stream Enabled
+
+This enables the native RabbitMQ Stream listener on `5552`.
+
+```bash
+COSMOBROKER_ENABLE_RMQ_STREAM=true \
+COSMOBROKER_STREAM_PORT=5552 \
+dotnet run --project CosmoBroker.Server/CosmoBroker.Server.csproj
+```
+
+If external clients should connect through a hostname other than `localhost`, set the advertised host too:
+
+```bash
+COSMOBROKER_ENABLE_RMQ_STREAM=true \
+COSMOBROKER_STREAM_PORT=5552 \
+COSMOBROKER_STREAM_ADVERTISED_HOST=broker.example.com \
 dotnet run --project CosmoBroker.Server/CosmoBroker.Server.csproj
 ```
 
@@ -157,6 +180,16 @@ docker run --rm -p 4222:4222 -p 8222:8222 -p 5672:5672 \
   your-dockerhub-user/cosmobroker-server:latest
 ```
 
+If you want the RabbitMQ Stream protocol in Docker, opt in explicitly too:
+
+```bash
+docker run --rm -p 4222:4222 -p 8222:8222 -p 5552:5552 \
+  -e COSMOBROKER_ENABLE_NATS=true \
+  -e COSMOBROKER_ENABLE_RMQ_STREAM=true \
+  -e COSMOBROKER_STREAM_PORT=5552 \
+  your-dockerhub-user/cosmobroker-server:latest
+```
+
 If you want a single RabbitMQ-style image that includes both the broker and the management UI, use:
 
 ```bash
@@ -183,6 +216,9 @@ That combined image starts:
 | `COSMOBROKER_ENABLE_NATS` | Enable or disable the NATS listener |
 | `COSMOBROKER_ENABLE_AMQP` | Enable or disable the AMQP listener |
 | `COSMOBROKER_AMQP_PORT` | Native AMQP listener port |
+| `COSMOBROKER_ENABLE_RMQ_STREAM` | Enable or disable the RabbitMQ Stream listener |
+| `COSMOBROKER_STREAM_PORT` | Native RabbitMQ Stream listener port |
+| `COSMOBROKER_STREAM_ADVERTISED_HOST` | Hostname advertised to RabbitMQ stream clients in metadata responses |
 | `COSMOBROKER_REPO` | Repository connection string |
 | `COSMOBROKER_CONFIG` | Optional config file path |
 
@@ -245,6 +281,47 @@ await channel.BasicConsumeAsync("orders.q", autoAck: false, consumer);
 
 var payload = Encoding.UTF8.GetBytes("order-123");
 await channel.BasicPublishAsync("orders", "created", mandatory: true, body: payload);
+```
+
+### RabbitMQ.Stream.Client Against CosmoBroker
+
+For the native stream protocol, use the standard `RabbitMQ.Stream.Client` package against CosmoBroker's stream port:
+
+```csharp
+using System.Net;
+using System.Text;
+using RabbitMQ.Stream.Client;
+using RabbitMQ.Stream.Client.Reliable;
+
+await using var system = await StreamSystem.Create(new StreamSystemConfig
+{
+    UserName = "guest",
+    Password = "guest",
+    Endpoints = new List<EndPoint> { new IPEndPoint(IPAddress.Loopback, 5552) }
+});
+
+await system.CreateStream(new StreamSpec("orders.stream"));
+
+var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+var consumer = await Consumer.Create(new ConsumerConfig(system, "orders.stream")
+{
+    Reference = "orders-stream-consumer",
+    OffsetSpec = new OffsetTypeFirst(),
+    MessageHandler = async (_, _, _, message) =>
+    {
+        received.TrySetResult(Encoding.UTF8.GetString(message.Data.Contents.ToArray()));
+        await Task.CompletedTask;
+    }
+});
+
+var producer = await Producer.Create(new ProducerConfig(system, "orders.stream"));
+await producer.Send(new Message(Encoding.UTF8.GetBytes("order-123")));
+
+Console.WriteLine(await received.Task);
+
+await producer.Close();
+await consumer.Close();
 ```
 
 ### Durable Publish With Publisher Confirms

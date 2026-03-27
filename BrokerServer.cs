@@ -18,6 +18,7 @@ public class BrokerServer : IAsyncDisposable
     private readonly int _port;
     private readonly int _amqpPort;
     private readonly int _streamPort;
+    private readonly string _streamAdvertisedHost;
     private Socket? _listenSocket;
     private Socket? _amqpListenSocket;
     private Socket? _streamListenSocket;
@@ -67,11 +68,12 @@ public class BrokerServer : IAsyncDisposable
         return System.Text.Encoding.UTF8.GetBytes(msg);
     }
 
-    public BrokerServer(int port = 4222, int amqpPort = 0, int streamPort = 0, Persistence.MessageRepository? repo = null, Auth.IAuthenticator? authenticator = null, X509Certificate2? serverCertificate = null, int monitorPort = 8222)
+    public BrokerServer(int port = 4222, int amqpPort = 0, int streamPort = 0, Persistence.MessageRepository? repo = null, Auth.IAuthenticator? authenticator = null, X509Certificate2? serverCertificate = null, int monitorPort = 8222, string? streamAdvertisedHost = null)
     {
         _port = port;
         _amqpPort = amqpPort;
         _streamPort = streamPort;
+        _streamAdvertisedHost = string.IsNullOrWhiteSpace(streamAdvertisedHost) ? "localhost" : streamAdvertisedHost;
         _repo = repo;
         _authenticator = authenticator;
         _serverCertificate = serverCertificate;
@@ -342,7 +344,7 @@ public class BrokerServer : IAsyncDisposable
                     try
                     {
                         stream = new NetworkStream(socket, ownsSocket: true);
-                        await using var connection = new RabbitMQ.Streams.StreamConnection(stream, _rmqExchanges, _authenticator);
+                        await using var connection = new RabbitMQ.Streams.StreamConnection(stream, _rmqExchanges, _authenticator, _streamPort, _streamAdvertisedHost);
                         await connection.RunAsync(ct);
                     }
                     catch

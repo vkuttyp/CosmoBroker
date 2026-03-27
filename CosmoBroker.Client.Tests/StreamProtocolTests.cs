@@ -193,6 +193,128 @@ public class StreamProtocolTests : IAsyncDisposable
         Assert.Contains(names, name => name.Contains(resolved, StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task StreamProtocol_ShouldAdvertiseConfiguredMetadataHost()
+    {
+        const int metadataStreamPort = 5561;
+        const int metadataMonitorPort = 8261;
+        using var metadataCts = new CancellationTokenSource();
+        await using var metadataServer = new BrokerServer(
+            port: 0,
+            amqpPort: 0,
+            streamPort: metadataStreamPort,
+            monitorPort: metadataMonitorPort,
+            streamAdvertisedHost: "stream.example.test");
+        _ = metadataServer.StartAsync(metadataCts.Token);
+        WaitForPort("127.0.0.1", metadataStreamPort, TimeSpan.FromSeconds(5));
+
+        using var client = new TcpClient();
+        await client.ConnectAsync("127.0.0.1", metadataStreamPort);
+        await using var stream = client.GetStream();
+        await OpenStreamSessionAsync(stream);
+
+        await WriteCommandAsync(stream, 15, writer =>
+        {
+            WriteUInt32(writer, 30);
+            WriteInt32(writer, 1);
+            WriteString(writer, "missing-stream");
+        });
+
+        var metadata = await ReadFrameAsync(stream);
+        Assert.Equal((ushort)(15 | 0x8000), metadata.Key);
+        Assert.Equal((uint)30, ReadUInt32(metadata.Payload, ref metadata.Offset));
+        Assert.Equal((uint)1, ReadUInt32(metadata.Payload, ref metadata.Offset));
+        Assert.Equal((short)0, ReadInt16(metadata.Payload, ref metadata.Offset));
+        Assert.Equal("stream.example.test", ReadString(metadata.Payload, ref metadata.Offset));
+        Assert.Equal((uint)metadataStreamPort, ReadUInt32(metadata.Payload, ref metadata.Offset));
+
+        metadataCts.Cancel();
+    }
+
+    [Fact]
+    public async Task StreamProtocol_ShouldIssueConsumerUpdateForSingleActiveConsumers()
+    {
+        using var firstClient = new TcpClient();
+        await firstClient.ConnectAsync("127.0.0.1", StreamPort);
+        await using var firstStream = firstClient.GetStream();
+        await OpenStreamSessionAsync(firstStream);
+
+        await WriteCommandAsync(firstStream, 13, writer =>
+        {
+            WriteUInt32(writer, 40);
+            WriteString(writer, "stream.sac.raw");
+            WriteStringMap(writer, new Dictionary<string, string>());
+        });
+        _ = await ReadFrameAsync(firstStream);
+
+        await WriteCommandAsync(firstStream, 7, writer =>
+        {
+            WriteUInt32(writer, 41);
+            writer.WriteByte(1);
+            WriteString(writer, "stream.sac.raw");
+            WriteUInt16(writer, 3);
+            WriteUInt16(writer, 10);
+            WriteInt32(writer, 2);
+            WriteString(writer, "name");
+            WriteString(writer, "sac-ref");
+            WriteString(writer, "single-active-consumer");
+            WriteString(writer, "true");
+        });
+
+        var firstSubscribe = await ReadFrameAsync(firstStream);
+        Assert.Equal((ushort)(7 | 0x8000), firstSubscribe.Key);
+        Assert.Equal((uint)41, ReadUInt32(firstSubscribe.Payload, ref firstSubscribe.Offset));
+        Assert.Equal((ushort)1, ReadUInt16(firstSubscribe.Payload, ref firstSubscribe.Offset));
+
+        var firstUpdate = await ReadFrameAsync(firstStream);
+        Assert.Equal((ushort)26, firstUpdate.Key);
+        var firstCorrelation = ReadUInt32(firstUpdate.Payload, ref firstUpdate.Offset);
+        Assert.Equal((byte)1, firstUpdate.Payload[firstUpdate.Offset++]);
+        Assert.Equal((byte)1, firstUpdate.Payload[firstUpdate.Offset++]);
+
+        await WriteCommandAsync(firstStream, (ushort)(26 | 0x8000), writer =>
+        {
+            WriteUInt32(writer, firstCorrelation);
+            WriteUInt16(writer, 3);
+        });
+
+        using var secondClient = new TcpClient();
+        await secondClient.ConnectAsync("127.0.0.1", StreamPort);
+        await using var secondStream = secondClient.GetStream();
+        await OpenStreamSessionAsync(secondStream);
+
+        await WriteCommandAsync(secondStream, 7, writer =>
+        {
+            WriteUInt32(writer, 42);
+            writer.WriteByte(1);
+            WriteString(writer, "stream.sac.raw");
+            WriteUInt16(writer, 3);
+            WriteUInt16(writer, 10);
+            WriteInt32(writer, 2);
+            WriteString(writer, "name");
+            WriteString(writer, "sac-ref");
+            WriteString(writer, "single-active-consumer");
+            WriteString(writer, "true");
+        });
+
+        var secondSubscribe = await ReadFrameAsync(secondStream);
+        Assert.Equal((ushort)(7 | 0x8000), secondSubscribe.Key);
+        Assert.Equal((uint)42, ReadUInt32(secondSubscribe.Payload, ref secondSubscribe.Offset));
+        Assert.Equal((ushort)1, ReadUInt16(secondSubscribe.Payload, ref secondSubscribe.Offset));
+
+        var secondUpdate = await ReadFrameAsync(secondStream);
+        Assert.Equal((ushort)26, secondUpdate.Key);
+        var secondCorrelation = ReadUInt32(secondUpdate.Payload, ref secondUpdate.Offset);
+        Assert.Equal((byte)1, secondUpdate.Payload[secondUpdate.Offset++]);
+        Assert.Equal((byte)0, secondUpdate.Payload[secondUpdate.Offset++]);
+
+        await WriteCommandAsync(secondStream, (ushort)(26 | 0x8000), writer =>
+        {
+            WriteUInt32(writer, secondCorrelation);
+            WriteUInt16(writer, 3);
+        });
+    }
+
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();
@@ -329,6 +451,13 @@ public class StreamProtocolTests : IAsyncDisposable
     {
         var value = BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(offset, 4));
         offset += 4;
+        return value;
+    }
+
+    private static short ReadInt16(byte[] buffer, ref int offset)
+    {
+        var value = BinaryPrimitives.ReadInt16BigEndian(buffer.AsSpan(offset, 2));
+        offset += 2;
         return value;
     }
 

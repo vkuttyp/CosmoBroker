@@ -17,12 +17,14 @@ internal sealed class StreamConnection : IAsyncDisposable
     private const ushort SaslAuthenticateKey = 19;
     private const ushort TuneKey = 20;
     private const ushort OpenKey = 21;
+    private const ushort CloseKey = 22;
     private const ushort CreateKey = 13;
     private const ushort DeleteKey = 14;
     private const ushort DeclarePublisherKey = 1;
     private const ushort PublishKey = 2;
     private const ushort PublishConfirmKey = 3;
     private const ushort PublishErrorKey = 4;
+    private const ushort QueryPublisherKey = 5;
     private const ushort DeletePublisherKey = 6;
     private const ushort SubscribeKey = 7;
     private const ushort DeliverKey = 8;
@@ -30,8 +32,13 @@ internal sealed class StreamConnection : IAsyncDisposable
     private const ushort StoreOffsetKey = 10;
     private const ushort QueryOffsetKey = 11;
     private const ushort UnsubscribeKey = 12;
+    private const ushort ConsumerUpdateKey = 26;
     private const ushort PartitionsQueryKey = 0x0019;
     private const ushort RouteQueryKey = 0x0018;
+    private const ushort MetadataKey = 15;
+    private const ushort StreamStatsKey = 0x001c;
+    private const ushort CreateSuperStreamKey = 29;
+    private const ushort DeleteSuperStreamKey = 30;
     private const ushort CommandVersionsKey = 0x001b;
     private const ushort HeartbeatKey = 23;
 
@@ -39,11 +46,17 @@ internal sealed class StreamConnection : IAsyncDisposable
     private readonly ExchangeManager _manager;
     private readonly IAuthenticator? _authenticator;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
-    private readonly ConcurrentDictionary<byte, string> _publishers = new();
+    private readonly ConcurrentDictionary<byte, PublisherState> _publishers = new();
     private readonly ConcurrentDictionary<byte, SubscriptionState> _subscriptions = new();
+    private readonly ConcurrentDictionary<uint, TaskCompletionSource<(ushort Kind, ulong? Value)>> _consumerUpdateRequests = new();
+    private static readonly ConcurrentDictionary<string, StreamConnection> LiveConnections = new(StringComparer.Ordinal);
     private readonly string _sessionId = Guid.NewGuid().ToString("N");
     private static readonly uint[] Crc32Table = BuildCrc32Table();
+    private readonly int _streamPort;
+    private readonly string _streamAdvertisedHost;
     private bool _authenticated;
+    private bool _closeRequested;
+    private int _nextConsumerUpdateCorrelationId = 1000;
     private string _vhost = "/";
     private string? _username;
 
@@ -51,16 +64,29 @@ internal sealed class StreamConnection : IAsyncDisposable
     {
         public required string Stream { get; init; }
         public required string ConsumerTag { get; init; }
+        public required string MembershipId { get; init; }
         public required byte SubscriptionId { get; init; }
+        public string? Reference { get; init; }
+        public bool IsSingleActiveConsumer { get; init; }
+        public bool IsActive { get; set; } = true;
         public ushort Credit { get; set; }
     }
 
-    public StreamConnection(Stream stream, ExchangeManager manager, IAuthenticator? authenticator = null)
+    private sealed class PublisherState
+    {
+        public required string Stream { get; init; }
+        public string Reference { get; init; } = string.Empty;
+    }
+
+    public StreamConnection(Stream stream, ExchangeManager manager, IAuthenticator? authenticator = null, int streamPort = 5552, string? streamAdvertisedHost = null)
     {
         _stream = stream;
         _manager = manager;
         _authenticator = authenticator;
+        _streamPort = streamPort > 0 ? streamPort : 5552;
+        _streamAdvertisedHost = string.IsNullOrWhiteSpace(streamAdvertisedHost) ? "localhost" : streamAdvertisedHost;
         _manager.StreamMessageAppended += OnStreamAppended;
+        LiveConnections[_sessionId] = this;
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -72,6 +98,8 @@ internal sealed class StreamConnection : IAsyncDisposable
                 break;
 
             await HandleFrameAsync(frame, ct);
+            if (_closeRequested)
+                break;
         }
     }
 
@@ -99,6 +127,9 @@ internal sealed class StreamConnection : IAsyncDisposable
             case OpenKey:
                 await HandleOpenAsync(frame, offset, ct);
                 break;
+            case CloseKey:
+                await HandleCloseAsync(frame, offset, ct);
+                break;
             case CommandVersionsKey:
                 await HandleCommandVersionsAsync(frame, offset, ct);
                 break;
@@ -108,17 +139,33 @@ internal sealed class StreamConnection : IAsyncDisposable
             case DeleteKey:
                 await HandleDeleteAsync(frame, offset, ct);
                 break;
+            case MetadataKey:
+                await HandleMetadataAsync(frame, offset, ct);
+                break;
+            case CreateSuperStreamKey:
+                await HandleCreateSuperStreamAsync(frame, offset, ct);
+                break;
+            case DeleteSuperStreamKey:
+                await HandleDeleteSuperStreamAsync(frame, offset, ct);
+                break;
             case DeclarePublisherKey:
                 await HandleDeclarePublisherAsync(frame, offset, ct);
                 break;
             case PublishKey:
                 await HandlePublishAsync(frame, offset, ct);
                 break;
+            case QueryPublisherKey:
+                await HandleQueryPublisherAsync(frame, offset, ct);
+                break;
             case DeletePublisherKey:
                 await HandleDeletePublisherAsync(frame, offset, ct);
                 break;
             case SubscribeKey:
                 await HandleSubscribeAsync(frame, offset, ct);
+                break;
+            case ConsumerUpdateKey:
+                if ((rawKey & StreamWire.ResponseMask) != 0)
+                    HandleConsumerUpdateResponse(frame, offset);
                 break;
             case CreditKey:
                 await HandleCreditAsync(frame, offset);
@@ -137,6 +184,9 @@ internal sealed class StreamConnection : IAsyncDisposable
                 break;
             case RouteQueryKey:
                 await HandleRouteQueryAsync(frame, offset, ct);
+                break;
+            case StreamStatsKey:
+                await HandleStreamStatsAsync(frame, offset, ct);
                 break;
             case HeartbeatKey:
                 break;
@@ -251,7 +301,7 @@ internal sealed class StreamConnection : IAsyncDisposable
         var properties = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["advertised_host"] = "localhost",
-            ["stream_port"] = "5552"
+            ["stream_port"] = _streamPort.ToString()
         };
 
         await SendResponseAsync(OpenKey, writer =>
@@ -273,18 +323,25 @@ internal sealed class StreamConnection : IAsyncDisposable
             (SaslAuthenticateKey, 1, 1),
             (TuneKey, 1, 1),
             (OpenKey, 1, 1),
+            (CloseKey, 1, 1),
             (CreateKey, 1, 1),
             (DeleteKey, 1, 1),
+            (MetadataKey, 1, 1),
+            (CreateSuperStreamKey, 1, 1),
+            (DeleteSuperStreamKey, 1, 1),
             (DeclarePublisherKey, 1, 1),
             (PublishKey, 1, 1),
+            (QueryPublisherKey, 1, 1),
             (DeletePublisherKey, 1, 1),
             (SubscribeKey, 1, 1),
+            (ConsumerUpdateKey, 1, 1),
             (CreditKey, 1, 1),
             (StoreOffsetKey, 1, 1),
             (QueryOffsetKey, 1, 1),
             (UnsubscribeKey, 1, 1),
             (PartitionsQueryKey, 1, 1),
             (RouteQueryKey, 1, 1),
+            (StreamStatsKey, 1, 1),
             (CommandVersionsKey, 1, 1),
             (HeartbeatKey, 1, 1)
         };
@@ -300,6 +357,21 @@ internal sealed class StreamConnection : IAsyncDisposable
                 StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, command.Min);
                 StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, command.Max);
             }
+        }, ct);
+    }
+
+    private async Task HandleCloseAsync(byte[] frame, int offset, CancellationToken ct)
+    {
+        var span = frame.AsSpan();
+        var correlationId = StreamWire.ReadUInt32(span, ref offset);
+        _ = StreamWire.ReadUInt16(span, ref offset);
+        _ = StreamWire.ReadString(span, ref offset);
+        _closeRequested = true;
+
+        await SendResponseAsync(CloseKey, writer =>
+        {
+            StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, correlationId);
+            StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, 1);
         }, ct);
     }
 
@@ -348,18 +420,133 @@ internal sealed class StreamConnection : IAsyncDisposable
         }, ct);
     }
 
+    private async Task HandleMetadataAsync(byte[] frame, int offset, CancellationToken ct)
+    {
+        var span = frame.AsSpan();
+        var correlationId = StreamWire.ReadUInt32(span, ref offset);
+        var count = StreamWire.ReadInt32(span, ref offset);
+        var streams = new List<string>(Math.Max(0, count));
+        for (var i = 0; i < count; i++)
+            streams.Add(StreamWire.ReadString(span, ref offset));
+
+        await SendResponseAsync(MetadataKey, writer =>
+        {
+            StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, correlationId);
+            StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, 1);
+            StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, 0);
+            StreamWire.WriteString(writer.Buffer, ref writer.Offset, _streamAdvertisedHost);
+            StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, (uint)_streamPort);
+            StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, (uint)streams.Count);
+            foreach (var streamName in streams)
+            {
+                var queue = _manager.GetQueue(_vhost, streamName);
+                StreamWire.WriteString(writer.Buffer, ref writer.Offset, streamName);
+                if (queue?.Type == RabbitQueueType.Stream)
+                {
+                    StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, 1);
+                    StreamWire.WriteInt16(writer.Buffer, ref writer.Offset, 0);
+                    StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, 0);
+                }
+                else
+                {
+                    StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, 2);
+                    StreamWire.WriteInt16(writer.Buffer, ref writer.Offset, -1);
+                    StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, 0);
+                }
+            }
+        }, ct);
+    }
+
+    private async Task HandleCreateSuperStreamAsync(byte[] frame, int offset, CancellationToken ct)
+    {
+        var span = frame.AsSpan();
+        var correlationId = StreamWire.ReadUInt32(span, ref offset);
+        var superStream = StreamWire.ReadString(span, ref offset);
+        var partitionCount = StreamWire.ReadInt32(span, ref offset);
+        var partitions = new List<string>(Math.Max(0, partitionCount));
+        for (var i = 0; i < partitionCount; i++)
+            partitions.Add(StreamWire.ReadString(span, ref offset));
+
+        var bindingKeyCount = StreamWire.ReadInt32(span, ref offset);
+        var bindingKeys = new List<string>(Math.Max(0, bindingKeyCount));
+        for (var i = 0; i < bindingKeyCount; i++)
+            bindingKeys.Add(StreamWire.ReadString(span, ref offset));
+
+        var args = StreamWire.ReadStringMap(span, ref offset);
+        ushort code;
+        if (_manager.GetExchange(_vhost, superStream) != null)
+        {
+            code = 5;
+        }
+        else
+        {
+            var queueArgs = new RabbitQueueArgs
+            {
+                Type = RabbitQueueType.Stream,
+                Durable = true,
+                StreamMaxLengthBytes = TryGetLong(args, "max-length-bytes"),
+                StreamMaxLengthMessages = TryGetLong(args, "max-length"),
+                StreamMaxAgeMs = TryGetDurationMs(args, "max-age")
+            };
+            _manager.DeclareExchange(_vhost, superStream, ExchangeType.SuperStream, durable: true, autoDelete: false, superStreamPartitions: partitions.Count);
+            for (var i = 0; i < partitions.Count; i++)
+            {
+                var partition = partitions[i];
+                var bindingKey = i < bindingKeys.Count ? bindingKeys[i] : i.ToString();
+                _manager.DeclareQueue(_vhost, partition, queueArgs);
+                _manager.Bind(_vhost, superStream, partition, bindingKey);
+            }
+            code = 1;
+        }
+
+        await SendResponseAsync(CreateSuperStreamKey, writer =>
+        {
+            StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, correlationId);
+            StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, code);
+        }, ct);
+    }
+
+    private async Task HandleDeleteSuperStreamAsync(byte[] frame, int offset, CancellationToken ct)
+    {
+        var span = frame.AsSpan();
+        var correlationId = StreamWire.ReadUInt32(span, ref offset);
+        var superStream = StreamWire.ReadString(span, ref offset);
+        var exchange = _manager.GetExchange(_vhost, superStream);
+        ushort code;
+        if (exchange?.Type != ExchangeType.SuperStream)
+        {
+            code = 2;
+        }
+        else
+        {
+            foreach (var partitionKey in exchange.GetSuperStreamPartitions())
+            {
+                if (_manager.Queues.TryGetValue(partitionKey, out var partitionQueue))
+                    _manager.DeleteQueue(partitionQueue.Vhost, partitionQueue.Name, ifUnused: false, ifEmpty: false);
+            }
+            _manager.DeleteExchange(_vhost, superStream, ifUnused: false);
+            code = 1;
+        }
+
+        await SendResponseAsync(DeleteSuperStreamKey, writer =>
+        {
+            StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, correlationId);
+            StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, code);
+        }, ct);
+    }
+
     private async Task HandleDeclarePublisherAsync(byte[] frame, int offset, CancellationToken ct)
     {
         var span = frame.AsSpan();
         var correlationId = StreamWire.ReadUInt32(span, ref offset);
         var publisherId = StreamWire.ReadByte(span, ref offset);
-        _ = StreamWire.ReadString(span, ref offset);
+        var publisherRef = StreamWire.ReadString(span, ref offset);
         var streamName = StreamWire.ReadString(span, ref offset);
 
         ushort code;
         if (_manager.GetQueue(_vhost, streamName)?.Type == RabbitQueueType.Stream)
         {
-            _publishers[publisherId] = streamName;
+            _publishers[publisherId] = new PublisherState { Stream = streamName, Reference = publisherRef };
             code = 1;
         }
         else
@@ -380,7 +567,7 @@ internal sealed class StreamConnection : IAsyncDisposable
         var publisherId = StreamWire.ReadByte(span, ref offset);
         var count = StreamWire.ReadInt32(span, ref offset);
 
-        if (!_publishers.TryGetValue(publisherId, out var streamName))
+        if (!_publishers.TryGetValue(publisherId, out var publisher))
         {
             await SendPublishErrorAsync(publisherId, [], ct);
             return;
@@ -394,8 +581,11 @@ internal sealed class StreamConnection : IAsyncDisposable
             var payloadLength = (int)StreamWire.ReadUInt32(span, ref offset);
             var payload = span.Slice(offset, payloadLength).ToArray();
             offset += payloadLength;
-            if (_manager.TryAppendToStream(_vhost, streamName, payload, out _))
+            if (_manager.TryAppendToStream(_vhost, publisher.Stream, payload, out _))
+            {
                 confirmed.Add(publishingId);
+                _manager.UpdateStreamPublisherSequence(_vhost, publisher.Stream, publisher.Reference, publishingId);
+            }
             else
                 errors.Add((publishingId, 2));
         }
@@ -404,6 +594,23 @@ internal sealed class StreamConnection : IAsyncDisposable
             await SendPublishConfirmAsync(publisherId, confirmed, ct);
         if (errors.Count > 0)
             await SendPublishErrorAsync(publisherId, errors, ct);
+    }
+
+    private async Task HandleQueryPublisherAsync(byte[] frame, int offset, CancellationToken ct)
+    {
+        var span = frame.AsSpan();
+        var correlationId = StreamWire.ReadUInt32(span, ref offset);
+        var publisherRef = StreamWire.ReadString(span, ref offset);
+        var streamName = StreamWire.ReadString(span, ref offset);
+        var exists = _manager.GetQueue(_vhost, streamName)?.Type == RabbitQueueType.Stream;
+        var sequence = exists ? _manager.GetStreamPublisherSequence(_vhost, streamName, publisherRef) : 0UL;
+
+        await SendResponseAsync(QueryPublisherKey, writer =>
+        {
+            StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, correlationId);
+            StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, exists ? (ushort)1 : (ushort)2);
+            StreamWire.WriteUInt64(writer.Buffer, ref writer.Offset, sequence);
+        }, ct);
     }
 
     private async Task HandleDeletePublisherAsync(byte[] frame, int offset, CancellationToken ct)
@@ -428,12 +635,15 @@ internal sealed class StreamConnection : IAsyncDisposable
         var streamName = StreamWire.ReadString(span, ref offset);
         var offsetSpec = ReadOffsetSpec(span, ref offset);
         var credit = StreamWire.ReadUInt16(span, ref offset);
+        Dictionary<string, string>? properties = null;
         if (offset < frame.Length)
         {
-            _ = StreamWire.ReadStringMap(span, ref offset);
+            properties = StreamWire.ReadStringMap(span, ref offset);
         }
 
         ushort code;
+        bool isActive = true;
+        string? reference = null;
         if (_manager.GetQueue(_vhost, streamName)?.Type != RabbitQueueType.Stream)
         {
             code = 2;
@@ -441,12 +651,30 @@ internal sealed class StreamConnection : IAsyncDisposable
         else
         {
             var consumerTag = $"stream-sub-{subscriptionId}";
-            _manager.TryStoreStreamConsumerOffset(_vhost, streamName, consumerTag, ResolveInitialOffset(streamName, offsetSpec), out _);
+            var membershipId = $"{_sessionId}:{subscriptionId}";
+            reference = properties != null && properties.TryGetValue("name", out var name) ? name : null;
+            var isSingleActiveConsumer = properties != null &&
+                                         properties.TryGetValue("single-active-consumer", out var sacValue) &&
+                                         string.Equals(sacValue, "true", StringComparison.OrdinalIgnoreCase) &&
+                                         !string.IsNullOrWhiteSpace(reference);
+            if (!isSingleActiveConsumer)
+            {
+                _manager.TryStoreStreamConsumerOffset(_vhost, streamName, consumerTag, ResolveInitialOffset(streamName, offsetSpec), out _);
+            }
+            else
+            {
+                _manager.TryRegisterSingleActiveStreamConsumer(_vhost, streamName, reference!, membershipId, out isActive);
+            }
+
             _subscriptions[subscriptionId] = new SubscriptionState
             {
                 Stream = streamName,
                 ConsumerTag = consumerTag,
+                MembershipId = membershipId,
                 SubscriptionId = subscriptionId,
+                Reference = reference,
+                IsSingleActiveConsumer = isSingleActiveConsumer,
+                IsActive = isActive,
                 Credit = credit
             };
             code = 1;
@@ -459,7 +687,12 @@ internal sealed class StreamConnection : IAsyncDisposable
         }, ct);
 
         if (code == 1)
-            await DrainSubscriptionAsync(subscriptionId, ct);
+        {
+            if (_subscriptions.TryGetValue(subscriptionId, out var subscription) && subscription.IsSingleActiveConsumer)
+                _ = Task.Run(() => SendConsumerUpdateQueryAsync(subscription, subscription.IsActive, CancellationToken.None));
+            else
+                await DrainSubscriptionAsync(subscriptionId, ct);
+        }
     }
 
     private async Task HandleCreditAsync(byte[] frame, int offset)
@@ -515,7 +748,9 @@ internal sealed class StreamConnection : IAsyncDisposable
         var span = frame.AsSpan();
         var correlationId = StreamWire.ReadUInt32(span, ref offset);
         var subscriptionId = StreamWire.ReadByte(span, ref offset);
-        var removed = _subscriptions.TryRemove(subscriptionId, out _);
+        var removed = _subscriptions.TryRemove(subscriptionId, out var removedSubscription);
+        if (removed && removedSubscription is not null)
+            _ = Task.Run(() => OnSubscriptionRemovedAsync(removedSubscription, CancellationToken.None));
 
         await SendResponseAsync(UnsubscribeKey, writer =>
         {
@@ -529,10 +764,7 @@ internal sealed class StreamConnection : IAsyncDisposable
         var span = frame.AsSpan();
         var correlationId = StreamWire.ReadUInt32(span, ref offset);
         var superStream = StreamWire.ReadString(span, ref offset);
-        var exchange = _manager.GetExchange(_vhost, superStream);
-        var partitions = exchange?.Type == ExchangeType.SuperStream
-            ? exchange.GetSuperStreamPartitions().ToArray()
-            : Array.Empty<string>();
+        var partitions = _manager.GetSuperStreamPartitionNames(_vhost, superStream).ToArray();
 
         await SendResponseAsync(PartitionsQueryKey, writer =>
         {
@@ -560,6 +792,42 @@ internal sealed class StreamConnection : IAsyncDisposable
             StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, (uint)partitions.Length);
             foreach (var value in partitions)
                 StreamWire.WriteString(writer.Buffer, ref writer.Offset, value);
+        }, ct);
+    }
+
+    private async Task HandleStreamStatsAsync(byte[] frame, int offset, CancellationToken ct)
+    {
+        var span = frame.AsSpan();
+        var correlationId = StreamWire.ReadUInt32(span, ref offset);
+        var streamName = StreamWire.ReadString(span, ref offset);
+        var queue = _manager.GetQueue(_vhost, streamName);
+
+        await SendResponseAsync(StreamStatsKey, writer =>
+        {
+            StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, correlationId);
+            if (queue?.Type != RabbitQueueType.Stream)
+            {
+                StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, 2);
+                StreamWire.WriteInt32(writer.Buffer, ref writer.Offset, 0);
+                return;
+            }
+
+            var first = queue.Count > 0 ? queue.StreamHeadOffset : -1;
+            var last = queue.Count > 0 ? queue.StreamTailOffset : -1;
+            var stats = new Dictionary<string, long>(StringComparer.Ordinal)
+            {
+                ["first_chunk_id"] = first,
+                ["last_chunk_id"] = last,
+                ["committed_chunk_id"] = last
+            };
+
+            StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, 1);
+            StreamWire.WriteInt32(writer.Buffer, ref writer.Offset, stats.Count);
+            foreach (var (name, value) in stats)
+            {
+                StreamWire.WriteString(writer.Buffer, ref writer.Offset, name);
+                StreamWire.WriteInt64(writer.Buffer, ref writer.Offset, value);
+            }
         }, ct);
     }
 
@@ -610,6 +878,8 @@ internal sealed class StreamConnection : IAsyncDisposable
     {
         if (!_subscriptions.TryGetValue(subscriptionId, out var subscription))
             return;
+        if (subscription.IsSingleActiveConsumer && !subscription.IsActive)
+            return;
 
         var queue = _manager.GetQueue(_vhost, subscription.Stream);
         if (queue == null)
@@ -620,6 +890,71 @@ internal sealed class StreamConnection : IAsyncDisposable
             subscription.Credit--;
             await SendDeliverAsync(subscriptionId, message, ct);
         }
+    }
+
+    private void HandleConsumerUpdateResponse(byte[] frame, int offset)
+    {
+        var span = frame.AsSpan();
+        var correlationId = StreamWire.ReadUInt32(span, ref offset);
+        var offsetSpec = ReadOffsetSpec(span, ref offset);
+        if (_consumerUpdateRequests.TryRemove(correlationId, out var pending))
+            pending.TrySetResult(offsetSpec);
+    }
+
+    private async Task SendConsumerUpdateQueryAsync(SubscriptionState subscription, bool isActive, CancellationToken ct)
+    {
+        var correlationId = (uint)Interlocked.Increment(ref _nextConsumerUpdateCorrelationId);
+        var pending = new TaskCompletionSource<(ushort Kind, ulong? Value)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _consumerUpdateRequests[correlationId] = pending;
+
+        await SendFrameAsync(ConsumerUpdateKey, writer =>
+        {
+            StreamWire.WriteUInt32(writer.Buffer, ref writer.Offset, correlationId);
+            StreamWire.WriteByte(writer.Buffer, ref writer.Offset, subscription.SubscriptionId);
+            StreamWire.WriteByte(writer.Buffer, ref writer.Offset, isActive ? (byte)1 : (byte)0);
+        }, ct);
+
+        (ushort Kind, ulong? Value) update;
+        try
+        {
+            update = await pending.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        }
+        catch
+        {
+            _consumerUpdateRequests.TryRemove(correlationId, out _);
+            update = (3, null);
+        }
+
+        subscription.IsActive = isActive;
+        if (isActive)
+        {
+            _manager.TryStoreStreamConsumerOffset(_vhost, subscription.Stream, subscription.ConsumerTag, ResolveInitialOffset(subscription.Stream, update), out _);
+            await DrainSubscriptionAsync(subscription.SubscriptionId, ct);
+        }
+    }
+
+    private async Task OnSubscriptionRemovedAsync(SubscriptionState removedSubscription, CancellationToken ct)
+    {
+        if (!removedSubscription.IsSingleActiveConsumer || string.IsNullOrWhiteSpace(removedSubscription.Reference))
+            return;
+
+        if (!_manager.ReleaseSingleActiveStreamConsumer(_vhost, removedSubscription.Stream, removedSubscription.Reference, removedSubscription.MembershipId))
+            return;
+
+        var replacement = LiveConnections.Values
+            .SelectMany(connection => connection._subscriptions.Values.Select(subscription => (Connection: connection, Subscription: subscription)))
+            .Where(static item => item.Subscription.IsSingleActiveConsumer)
+            .Where(item => !ReferenceEquals(item.Connection, this) || !string.Equals(item.Subscription.MembershipId, removedSubscription.MembershipId, StringComparison.Ordinal))
+            .Where(item => string.Equals(item.Subscription.Stream, removedSubscription.Stream, StringComparison.Ordinal))
+            .Where(item => string.Equals(item.Subscription.Reference, removedSubscription.Reference, StringComparison.Ordinal))
+            .OrderBy(item => item.Subscription.SubscriptionId)
+            .FirstOrDefault();
+
+        if (replacement == default)
+            return;
+
+        _manager.TryRegisterSingleActiveStreamConsumer(_vhost, replacement.Subscription.Stream, replacement.Subscription.Reference!, replacement.Subscription.MembershipId, out _);
+        await replacement.Connection.SendConsumerUpdateQueryAsync(replacement.Subscription, true, ct);
     }
 
     private async Task SendPublishConfirmAsync(byte publisherId, IReadOnlyList<ulong> ids, CancellationToken ct)
@@ -746,7 +1081,10 @@ internal sealed class StreamConnection : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
+        LiveConnections.TryRemove(_sessionId, out _);
         _manager.StreamMessageAppended -= OnStreamAppended;
+        foreach (var subscription in _subscriptions.Values)
+            _ = Task.Run(() => OnSubscriptionRemovedAsync(subscription, CancellationToken.None));
         return ValueTask.CompletedTask;
     }
 }

@@ -79,6 +79,8 @@ class Program
         else if (args.Length > 3 && int.TryParse(args[3], out var argStreamPort))
             streamPort = argStreamPort;
 
+        var streamAdvertisedHost = Environment.GetEnvironmentVariable("COSMOBROKER_STREAM_ADVERTISED_HOST");
+
         var envEnableNats = Environment.GetEnvironmentVariable("COSMOBROKER_ENABLE_NATS");
         if (!string.IsNullOrWhiteSpace(envEnableNats) && TryParseBool(envEnableNats, out var parsedEnableNats))
             enableNats = parsedEnableNats;
@@ -116,7 +118,13 @@ class Program
         if (!string.IsNullOrWhiteSpace(repoConnection))
             repo = new MessageRepository(repoConnection);
 
-        var server = new BrokerServer(port: port, amqpPort: amqpPort, streamPort: streamPort, repo: repo, monitorPort: monitorPort);
+        var server = new BrokerServer(
+            port: port,
+            amqpPort: amqpPort,
+            streamPort: streamPort,
+            repo: repo,
+            monitorPort: monitorPort,
+            streamAdvertisedHost: streamAdvertisedHost);
         var cts = new CancellationTokenSource();
 
         // Handle both Ctrl+C (SIGINT) and SIGTERM (docker stop / systemd)

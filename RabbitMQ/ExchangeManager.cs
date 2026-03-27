@@ -18,6 +18,8 @@ public sealed class ExchangeManager
     private const string SuperStreamPartitionKeyHeader = "x-super-stream-partition-key";
 
     private readonly MessageRepository? _repo;
+    private readonly ConcurrentDictionary<string, ulong> _streamPublisherSequences = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> _streamActiveConsumers = new(StringComparer.OrdinalIgnoreCase);
     public ConcurrentDictionary<string, Exchange> Exchanges { get; } = new(StringComparer.OrdinalIgnoreCase);
     public ConcurrentDictionary<string, RabbitQueue> Queues { get; } = new(StringComparer.OrdinalIgnoreCase);
     public event Action<string, string>? StreamMessageAppended;
@@ -592,6 +594,70 @@ public sealed class ExchangeManager
 
         partition = GetBindingDisplayName(resolved);
         return true;
+    }
+
+    public void UpdateStreamPublisherSequence(string vhost, string streamName, string publisherRef, ulong publishingId)
+    {
+        if (string.IsNullOrWhiteSpace(publisherRef))
+            return;
+
+        var key = $"{NormalizeVhost(vhost)}|{streamName}|{publisherRef}";
+        _streamPublisherSequences.AddOrUpdate(
+            key,
+            publishingId,
+            (_, current) => publishingId > current ? publishingId : current);
+    }
+
+    public ulong GetStreamPublisherSequence(string vhost, string streamName, string publisherRef)
+    {
+        if (string.IsNullOrWhiteSpace(publisherRef))
+            return 0;
+
+        var key = $"{NormalizeVhost(vhost)}|{streamName}|{publisherRef}";
+        return _streamPublisherSequences.TryGetValue(key, out var sequence) ? sequence : 0;
+    }
+
+    public bool TryRegisterSingleActiveStreamConsumer(string vhost, string streamName, string reference, string consumerId, out bool isActive)
+    {
+        var key = $"{NormalizeVhost(vhost)}|{streamName}|{reference}";
+        while (true)
+        {
+            if (_streamActiveConsumers.TryGetValue(key, out var activeConsumerId))
+            {
+                isActive = string.Equals(activeConsumerId, consumerId, StringComparison.Ordinal);
+                return true;
+            }
+
+            if (_streamActiveConsumers.TryAdd(key, consumerId))
+            {
+                isActive = true;
+                return true;
+            }
+        }
+    }
+
+    public bool ReleaseSingleActiveStreamConsumer(string vhost, string streamName, string reference, string consumerId)
+    {
+        var key = $"{NormalizeVhost(vhost)}|{streamName}|{reference}";
+        return _streamActiveConsumers.TryGetValue(key, out var activeConsumerId) &&
+               string.Equals(activeConsumerId, consumerId, StringComparison.Ordinal) &&
+               _streamActiveConsumers.TryRemove(key, out _);
+    }
+
+    public IReadOnlyList<string> GetSuperStreamPartitionNames(string vhost, string exchangeName)
+    {
+        var resolvedVhost = NormalizeVhost(vhost);
+        if (!Exchanges.TryGetValue(ExchangeKey(resolvedVhost, exchangeName), out var exchange) ||
+            exchange.Type != ExchangeType.SuperStream)
+        {
+            return Array.Empty<string>();
+        }
+
+        return exchange.GetSuperStreamPartitions()
+            .Select(GetBindingDisplayName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static x => x, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     public void CancelConsumer(string vhost, string queueName, string consumerTag)

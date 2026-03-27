@@ -1,10 +1,12 @@
 # RabbitMQ And AMQP Guide
 
-This guide covers how to use CosmoBroker as a RabbitMQ-compatible AMQP 0-9-1 broker, what is currently supported, how authentication and persistence work, and how to compare it against RabbitMQ with the built-in tools.
+This guide covers how to use CosmoBroker as a RabbitMQ-compatible broker across both AMQP 0-9-1 and the RabbitMQ Stream protocol, what is currently supported, how authentication and persistence work, and how to compare it against RabbitMQ with the built-in tools.
 
 ## Overview
 
 CosmoBroker exposes a native AMQP port that standard RabbitMQ clients can use directly. The intent is to support common RabbitMQ queue workflows without forcing users onto a custom protocol adapter.
+
+CosmoBroker also exposes a native RabbitMQ Stream listener for standard `RabbitMQ.Stream.Client` workloads.
 
 Client separation:
 
@@ -12,6 +14,7 @@ Client separation:
 - use `RabbitMQ.Client` for CosmoBroker's AMQP / RabbitMQ-compatible API
 
 This guide is about the AMQP side, so all client examples here use the standard RabbitMQ client library.
+For the native stream listener, this guide also includes `RabbitMQ.Stream.Client` examples.
 
 What works today:
 
@@ -31,6 +34,15 @@ What works today:
 - a first partitioned super-stream foundation via `x-super-stream` with `x-partitions`
 - super-stream partition retention propagation through `x-max-length`, `x-max-length-bytes`, and `x-max-age`
 - logical super-stream management summaries with partition and consumer-state visibility
+- native RabbitMQ Stream protocol support for:
+  - create/delete stream
+  - create/delete super stream
+  - publish and publish confirm/error
+  - subscribe, credit, and unsubscribe
+  - offset store/query
+  - metadata, route, partitions, and stream stats
+  - single-active-consumer negotiation and promotion
+- official `RabbitMQ.Stream.Client` interop for single-stream, super-stream, and single-active-consumer flows
 
 What is still outside current scope:
 
@@ -44,17 +56,37 @@ For the current CosmoBroker operational UI and API layer, see [management.md](ma
 
 ## Start The Broker With AMQP Enabled
 
-The server reads three ports:
+The server reads these ports:
 
 - argument `1` or `COSMOBROKER_PORT`: NATS listener
 - argument `2` or `COSMOBROKER_MONITOR_PORT`: monitor listener
 - argument `3` or `COSMOBROKER_AMQP_PORT`: AMQP listener
+- `COSMOBROKER_STREAM_PORT`: RabbitMQ Stream listener
 
 Example:
 
 ```bash
 COSMOBROKER_ENABLE_AMQP=true \
 COSMOBROKER_AMQP_PORT=5672 \
+dotnet run --project CosmoBroker.Server/CosmoBroker.Server.csproj
+```
+
+To enable the native RabbitMQ Stream listener too:
+
+```bash
+COSMOBROKER_ENABLE_AMQP=true \
+COSMOBROKER_AMQP_PORT=5672 \
+COSMOBROKER_ENABLE_RMQ_STREAM=true \
+COSMOBROKER_STREAM_PORT=5552 \
+dotnet run --project CosmoBroker.Server/CosmoBroker.Server.csproj
+```
+
+If external stream clients should reconnect through a public hostname, advertise it explicitly:
+
+```bash
+COSMOBROKER_ENABLE_RMQ_STREAM=true \
+COSMOBROKER_STREAM_PORT=5552 \
+COSMOBROKER_STREAM_ADVERTISED_HOST=broker.example.com \
 dotnet run --project CosmoBroker.Server/CosmoBroker.Server.csproj
 ```
 
@@ -81,6 +113,16 @@ If you want CosmoBroker to act purely as an AMQP broker, disable the NATS listen
 COSMOBROKER_ENABLE_NATS=false \
 COSMOBROKER_ENABLE_AMQP=true \
 COSMOBROKER_AMQP_PORT=5672 \
+dotnet run --project CosmoBroker.Server/CosmoBroker.Server.csproj
+```
+
+If you want only the native RabbitMQ Stream listener:
+
+```bash
+COSMOBROKER_ENABLE_NATS=false \
+COSMOBROKER_ENABLE_AMQP=false \
+COSMOBROKER_ENABLE_RMQ_STREAM=true \
+COSMOBROKER_STREAM_PORT=5552 \
 dotnet run --project CosmoBroker.Server/CosmoBroker.Server.csproj
 ```
 
@@ -260,6 +302,60 @@ When `COSMOBROKER_REPO` is set:
 - AMQP properties for durable messages are restored
 
 This makes repo-backed CosmoBroker suitable for RabbitMQ-style durability testing and AMQP comparison runs.
+
+## Native RabbitMQ Stream Client Example
+
+CosmoBroker also supports the native RabbitMQ Stream protocol on a separate listener. Use the standard `RabbitMQ.Stream.Client` package for this path.
+
+```csharp
+using System.Net;
+using System.Text;
+using RabbitMQ.Stream.Client;
+using RabbitMQ.Stream.Client.Reliable;
+
+await using var system = await StreamSystem.Create(new StreamSystemConfig
+{
+    UserName = "guest",
+    Password = "guest",
+    Endpoints = new List<EndPoint> { new IPEndPoint(IPAddress.Loopback, 5552) }
+});
+
+await system.CreateStream(new StreamSpec("audit.native.stream"));
+
+var delivered = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+var consumer = await Consumer.Create(new ConsumerConfig(system, "audit.native.stream")
+{
+    Reference = "audit-native-consumer",
+    OffsetSpec = new OffsetTypeFirst(),
+    MessageHandler = async (_, _, _, message) =>
+    {
+        delivered.TrySetResult(Encoding.UTF8.GetString(message.Data.Contents.ToArray()));
+        await Task.CompletedTask;
+    }
+});
+
+var producer = await Producer.Create(new ProducerConfig(system, "audit.native.stream"));
+await producer.Send(new Message(Encoding.UTF8.GetBytes("event-1")));
+
+Console.WriteLine(await delivered.Task);
+
+await producer.Close();
+await consumer.Close();
+```
+
+The current native stream listener supports:
+
+- stream create/delete
+- stream publish and subscribe
+- offset store/query
+- metadata and stream stats
+- route and partitions queries
+- native super-stream create/delete
+- broker-scoped publisher sequence recovery
+- single-active-consumer negotiation and promotion
+
+Advanced RabbitMQ Streams features like replication, segment-level operational controls, and full cluster behavior are still outside current scope.
 
 ## Stream Queue Example
 

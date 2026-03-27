@@ -124,6 +124,12 @@ internal static class StreamWire
         offset += 2;
     }
 
+    public static void WriteInt16(Span<byte> buffer, ref int offset, short value)
+    {
+        BinaryPrimitives.WriteInt16BigEndian(buffer[offset..], value);
+        offset += 2;
+    }
+
     public static void WriteUInt32(Span<byte> buffer, ref int offset, uint value)
     {
         BinaryPrimitives.WriteUInt32BigEndian(buffer[offset..], value);
