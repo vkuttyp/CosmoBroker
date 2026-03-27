@@ -1,5 +1,6 @@
 using CosmoApiServer.Core.Hosting;
 using CosmoBroker.Management.Models;
+using CosmoBroker.Management.Security;
 using CosmoBroker.Management.Services;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -12,6 +13,12 @@ if (!string.IsNullOrWhiteSpace(envManagementPort) && int.TryParse(envManagementP
 
 string monitorBaseUrl = Environment.GetEnvironmentVariable("COSMOBROKER_MONITOR_URL")
     ?? "http://127.0.0.1:8222";
+string managementUsername = Environment.GetEnvironmentVariable("COSMOBROKER_MANAGEMENT_USERNAME") ?? string.Empty;
+string managementPassword = Environment.GetEnvironmentVariable("COSMOBROKER_MANAGEMENT_PASSWORD") ?? string.Empty;
+bool allowAnonymousHealth = !string.Equals(
+    Environment.GetEnvironmentVariable("COSMOBROKER_MANAGEMENT_ALLOW_ANONYMOUS_HEALTH"),
+    "false",
+    StringComparison.OrdinalIgnoreCase);
 
 var staticRoot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
 if (!Directory.Exists(staticRoot))
@@ -26,7 +33,15 @@ builder.Services.AddSingleton(new BrokerManagementOptions
 {
     MonitorBaseUrl = monitorBaseUrl
 });
+builder.Services.AddSingleton(new ManagementAuthOptions
+{
+    Enabled = !string.IsNullOrWhiteSpace(managementUsername) && !string.IsNullOrWhiteSpace(managementPassword),
+    Username = managementUsername,
+    Password = managementPassword,
+    AllowAnonymousHealth = allowAnonymousHealth
+});
 builder.Services.AddSingleton<BrokerMonitorClient>();
+builder.UseMiddleware<ManagementBasicAuthMiddleware>();
 
 var app = builder.Build();
 

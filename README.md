@@ -70,6 +70,7 @@ CosmoBroker now includes a separate management application built on `CosmoApiSer
 - UI pages: `/`, `/connections`, `/jetstream`, `/rabbitmq`
 - API routes: `/api/health`, `/api/overview`, `/api/varz`, `/api/connections`, `/api/routes`, `/api/gateways`, `/api/leafs`, `/api/jetstream`, `/api/rabbitmq`
 - optional local demo seeder: `tools/ManagementSeeder`
+- optional HTTP Basic auth via `COSMOBROKER_MANAGEMENT_USERNAME` and `COSMOBROKER_MANAGEMENT_PASSWORD`
 
 For setup and usage, see [docs/management.md](docs/management.md).
 

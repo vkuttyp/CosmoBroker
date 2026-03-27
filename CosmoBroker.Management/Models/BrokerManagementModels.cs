@@ -7,6 +7,14 @@ public sealed class BrokerManagementOptions
     public string MonitorBaseUrl { get; init; } = "http://127.0.0.1:8222";
 }
 
+public sealed class ManagementAuthOptions
+{
+    public bool Enabled { get; init; }
+    public string Username { get; init; } = string.Empty;
+    public string Password { get; init; } = string.Empty;
+    public bool AllowAnonymousHealth { get; init; } = true;
+}
+
 public sealed class BrokerHealth
 {
     public bool ok { get; set; }

@@ -83,6 +83,29 @@ That helper opens live NATS and RabbitMQ connections, creates a JetStream stream
 |---|---|
 | `COSMOBROKER_MANAGEMENT_PORT` | HTTP port used by the management host |
 | `COSMOBROKER_MONITOR_URL` | Base URL of the broker monitor endpoint |
+| `COSMOBROKER_MANAGEMENT_USERNAME` | Enables HTTP Basic auth when set with a password |
+| `COSMOBROKER_MANAGEMENT_PASSWORD` | Enables HTTP Basic auth when set with a username |
+| `COSMOBROKER_MANAGEMENT_ALLOW_ANONYMOUS_HEALTH` | When `false`, `/api/health` also requires auth |
+
+## Basic Authentication
+
+The management app supports opt-in HTTP Basic authentication for both the HTML UI and the JSON API.
+
+Example:
+
+```bash
+COSMOBROKER_MONITOR_URL=http://127.0.0.1:8222 \
+COSMOBROKER_MANAGEMENT_PORT=9091 \
+COSMOBROKER_MANAGEMENT_USERNAME=admin \
+COSMOBROKER_MANAGEMENT_PASSWORD=change-me \
+dotnet run --project CosmoBroker.Management/CosmoBroker.Management.csproj
+```
+
+Behavior:
+
+- when username and password are both set, all routes require Basic auth
+- `/api/health` remains anonymous by default so container healthchecks keep working
+- set `COSMOBROKER_MANAGEMENT_ALLOW_ANONYMOUS_HEALTH=false` if you want health to be protected too
 
 ## Operational Notes
 
