@@ -313,6 +313,19 @@ The current `RabbitMQ.Client` comparison harness covers:
 
 The latest scripted comparison run completed with `16` scenarios and `0` detected anomalies in the exercised matrix.
 
+Compact benchmark summary:
+
+| Case | CosmoBroker | RabbitMQ | Takeaway |
+|---|---:|---:|---|
+| Baseline AMQP | `742,611 msg/sec`, `0.174 ms` avg | `663,702 msg/sec`, `0.394 ms` avg | CosmoBroker faster |
+| Functional parity | `0` anomalies | `0` anomalies | Match on exercised scenarios |
+| Concurrency x4 | `~1.58M msg/sec` | `~1.66M msg/sec` | Roughly comparable |
+| 64 KB payload | `~36.7k msg/sec` | `~22.9k msg/sec` | CosmoBroker ahead |
+| Durable, repo-backed | `~3.36M msg/sec`, `0.400 ms` avg | `~2.33M msg/sec`, `0.663 ms` avg | CosmoBroker ahead in that run |
+| Durable + confirms, repo-backed | `~5.1k msg/sec`, `0.659 ms` avg | `~2.85k msg/sec`, `0.820 ms` avg | CosmoBroker ahead |
+
+For the fuller breakdown, see [docs/performance.md](docs/performance.md).
+
 ## Architecture Notes
 
 Core server pieces:

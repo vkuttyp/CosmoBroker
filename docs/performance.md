@@ -59,6 +59,23 @@ The comparison harness currently exercises these RabbitMQ-style behaviors:
 
 The latest scripted comparison run reported `0` anomalies in this matrix.
 
+## Compact Summary
+
+The latest recorded local benchmark snapshots can be summarized like this:
+
+| Case | CosmoBroker | RabbitMQ | Takeaway |
+|---|---:|---:|---|
+| Baseline AMQP | `742,611 msg/sec`, `0.174 ms` avg | `663,702 msg/sec`, `0.394 ms` avg | CosmoBroker faster |
+| Functional parity | `0` anomalies | `0` anomalies | Match on exercised scenarios |
+| Concurrency x4 | `~1.58M msg/sec` | `~1.66M msg/sec` | Roughly comparable |
+| 4 KB payload | `~253k msg/sec` | `~236k msg/sec` | Slight CosmoBroker edge |
+| 64 KB payload | `~36.7k msg/sec` | `~22.9k msg/sec` | CosmoBroker ahead |
+| Durable, repo-backed | `~3.36M msg/sec`, `0.400 ms` avg | `~2.33M msg/sec`, `0.663 ms` avg | CosmoBroker ahead in that run |
+| Confirms | `~7.4k msg/sec` | `~3.7k msg/sec` | CosmoBroker ahead |
+| Durable + confirms, repo-backed | `~5.1k msg/sec`, `0.659 ms` avg | `~2.85k msg/sec`, `0.820 ms` avg | CosmoBroker ahead |
+
+This is still an engineering benchmark, not a formal independent benchmark. The exact winner can move with workload shape, warmup, payload size, and whether persistence is enabled.
+
 ## Performance Matrix Cases
 
 The AMQP matrix mode covers:
