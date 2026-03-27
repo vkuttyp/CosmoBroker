@@ -90,12 +90,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Checkout CosmoApiServer
-        uses: actions/checkout@v6
-        with:
-          repository: vkuttyp/CosmoApiServer
-          path: CosmoApiServer
-
       # Extract the semver tag (v1.1.5 → 1.1.5) for the image tag.
       - name: Extract version
         id: version

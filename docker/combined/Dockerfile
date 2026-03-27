@@ -6,7 +6,6 @@ WORKDIR /src
 COPY CosmoBroker.Server/CosmoBroker.Server.csproj CosmoBroker.Server/
 COPY CosmoBroker.Management/CosmoBroker.Management.csproj CosmoBroker.Management/
 COPY CosmoBroker.csproj ./
-COPY CosmoApiServer /CosmoApiServer
 
 RUN dotnet restore CosmoBroker.Server/CosmoBroker.Server.csproj
 RUN dotnet restore CosmoBroker.Management/CosmoBroker.Management.csproj
