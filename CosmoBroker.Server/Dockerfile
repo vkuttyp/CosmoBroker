@@ -22,9 +22,10 @@ USER cosmobroker
 
 COPY --from=build /app/publish .
 
-# Broker port + monitoring port
+# NATS port + monitoring port + optional AMQP port
 EXPOSE 4222
 EXPOSE 8222
+EXPOSE 5672
 
 # Invariant globalization: no ICU dependency, faster startup, smaller image.
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true
@@ -37,10 +38,15 @@ ENV DOTNET_SYSTEM_NET_SOCKETS_INLINE_COMPLETIONS=1
 # Server GC for high-throughput workloads (default in server processes, but explicit).
 ENV DOTNET_GCConserveMemory=0
 
+# Keep existing Docker users safe by default: NATS remains on, AMQP remains opt-in.
+ENV COSMOBROKER_ENABLE_NATS=true
+ENV COSMOBROKER_ENABLE_AMQP=false
+ENV COSMOBROKER_AMQP_PORT=5672
+
 # Ensure Docker stop sends SIGTERM so graceful lame-duck shutdown fires.
 STOPSIGNAL SIGTERM
 
-# Lightweight healthcheck: TCP connect to the broker port.
+# Healthcheck stays on the NATS listener so existing NATS-only deployments keep the same container contract.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
   CMD sh -c 'echo "" | nc -w 1 localhost 4222 && exit 0 || exit 1'
 

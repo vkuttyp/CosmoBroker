@@ -123,6 +123,24 @@ dotnet run --project CosmoBroker.Server/CosmoBroker.Server.csproj
 
 If you disable both, the process can still run its background services and monitoring endpoint, but it will not accept NATS or AMQP client traffic.
 
+### Docker Behavior
+
+The Docker image remains safe for existing NATS-only deployments:
+
+- NATS is enabled by default
+- AMQP is disabled by default
+- the container healthcheck still targets the NATS listener on `4222`
+
+If you want AMQP in Docker, opt in explicitly:
+
+```bash
+docker run --rm -p 4222:4222 -p 8222:8222 -p 5672:5672 \
+  -e COSMOBROKER_ENABLE_NATS=true \
+  -e COSMOBROKER_ENABLE_AMQP=true \
+  -e COSMOBROKER_AMQP_PORT=5672 \
+  your-dockerhub-user/cosmobroker-server:latest
+```
+
 ### Runtime Environment Variables
 
 | Variable | Purpose |

@@ -9,11 +9,11 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>1.1.5</Version>
+    <Version>1.2.0</Version>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>cosmobroker-server</ToolCommandName>
     <PackageId>CosmoBroker.Server</PackageId>
-    <Description>CosmoBroker standalone server (dotnet tool).</Description>
+    <Description>CosmoBroker standalone server with NATS enabled by default and optional native AMQP 0-9-1 support for RabbitMQ-style workloads.</Description>
     <PackageProjectUrl>https://github.com/vkuttyp/CosmoBroker</PackageProjectUrl>
     <RepositoryUrl>https://github.com/vkuttyp/CosmoBroker</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

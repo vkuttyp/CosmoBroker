@@ -31,13 +31,19 @@ jobs:
     - name: Restore & Build
       run: |
         dotnet restore CosmoBroker.csproj
+        dotnet restore CosmoBroker.Client.Tests/CosmoBroker.Client.Tests.csproj
         dotnet restore CosmoBroker.Server/CosmoBroker.Server.csproj
         dotnet restore CosmoBroker.Benchmarks/CosmoBroker.Benchmarks.csproj
         dotnet restore Test/Tests.csproj
         dotnet build CosmoBroker.csproj -c Release --no-restore
+        dotnet build CosmoBroker.Client.Tests/CosmoBroker.Client.Tests.csproj -c Release --no-restore
         dotnet build CosmoBroker.Server/CosmoBroker.Server.csproj -c Release --no-restore
         dotnet build CosmoBroker.Benchmarks/CosmoBroker.Benchmarks.csproj -c Release --no-restore
         dotnet build Test/Tests.csproj -c Release --no-restore
 
-    - name: Run Tests
+    - name: Run Core Tests
       run: dotnet test Test/Tests.csproj --no-build -c Release --logger "console;verbosity=normal" --blame-hang-timeout 30s
+
+    - name: Run RabbitMQ And AMQP Release Tests
+      run: |
+        dotnet test CosmoBroker.Client.Tests/CosmoBroker.Client.Tests.csproj --no-build -c Release --filter "FullyQualifiedName~AmqpInteropTests|FullyQualifiedName~AmqpAuthInteropTests|FullyQualifiedName~RabbitMQPersistenceTests|FullyQualifiedName~RabbitMQVhostAuthTests" --logger "console;verbosity=normal" --blame-hang-timeout 30s
