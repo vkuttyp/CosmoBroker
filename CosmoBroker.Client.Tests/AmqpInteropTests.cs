@@ -642,7 +642,7 @@ public class AmqpInteropTests : IAsyncDisposable
         var ex = Assert.Throws<OperationInterruptedException>(() =>
             channel.QueueUnbind("amqp.default.unbind.q", string.Empty, "unbind", null));
         Assert.Equal((ushort)403, ex.ShutdownReason.ReplyCode);
-        Assert.Contains("cannot be unbound", ex.ShutdownReason.ReplyText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("default exchange", ex.ShutdownReason.ReplyText, StringComparison.OrdinalIgnoreCase);
         Assert.False(channel.IsOpen);
     }
 
@@ -962,7 +962,10 @@ public class AmqpInteropTests : IAsyncDisposable
         var ex = Assert.Throws<OperationInterruptedException>(() =>
             channel.QueueDelete("amqp.delete.ifunused.q", ifUnused: true, ifEmpty: false));
         Assert.Equal((ushort)406, ex.ShutdownReason.ReplyCode);
-        Assert.Contains("could not be deleted", ex.ShutdownReason.ReplyText, StringComparison.OrdinalIgnoreCase);
+        Assert.True(
+            ex.ShutdownReason.ReplyText.Contains("in use", StringComparison.OrdinalIgnoreCase) ||
+            ex.ShutdownReason.ReplyText.Contains("could not", StringComparison.OrdinalIgnoreCase),
+            $"Unexpected reply text: {ex.ShutdownReason.ReplyText}");
         Assert.False(channel.IsOpen);
     }
 

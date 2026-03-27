@@ -343,66 +343,67 @@ public sealed class RabbitQueue
             {
                 bool deliveredAny = false;
 
-        foreach (var (tag, registration) in Consumers)
-        {
-            int limit = registration.AutoAck ? 0 : PrefetchCount.GetValueOrDefault(tag, 0);
-            // Drain until queue empty or prefetch limit reached
-            while (true)
-            {
-                int inFlight = registration.AutoAck ? 0 : GetInFlightCount(tag);
-                if (limit > 0 && inFlight >= limit) break;
-
-                if (!TryDequeue(out var msg) || msg == null) break;
-
-                bool tracked = false;
-                if (!registration.AutoAck)
+                foreach (var (tag, registration) in Consumers)
                 {
-                    TrackUnacked(msg, tag);
-                    tracked = true;
-                }
-
-                bool accepted;
-                try
-                {
-                    accepted = registration.Callback(msg);
-                    deliveredAny = true;
-                }
-                catch
-                {
-                    accepted = false;
-                }
-
-                if (!accepted)
-                {
-                    if (tracked)
-                        TryRemoveUnacked(msg.DeliveryTag, out _);
-
-                    lock (_dequeueLock)
+                    int limit = registration.AutoAck ? 0 : PrefetchCount.GetValueOrDefault(tag, 0);
+                    // Drain until queue empty or prefetch limit reached
+                    while (true)
                     {
-                        RequeueCore(msg);
-                    }
-                    ScheduleRetry();
-                    break;
-                }
+                        int inFlight = registration.AutoAck ? 0 : GetInFlightCount(tag);
+                        if (limit > 0 && inFlight >= limit) break;
 
-                if (registration.AutoAck)
-                {
-                    try
-                    {
-                        registration.AutoAckHandler?.Invoke(msg);
-                    }
-                    catch
-                    {
-                        lock (_dequeueLock)
+                        if (!TryDequeue(out var msg) || msg == null) break;
+
+                        bool tracked = false;
+                        if (!registration.AutoAck)
                         {
-                            RequeueCore(msg);
+                            TrackUnacked(msg, tag);
+                            tracked = true;
                         }
-                        ScheduleRetry();
-                        break;
+
+                        bool accepted;
+                        try
+                        {
+                            accepted = registration.Callback(msg);
+                        }
+                        catch
+                        {
+                            accepted = false;
+                        }
+
+                        if (!accepted)
+                        {
+                            if (tracked)
+                                TryRemoveUnacked(msg.DeliveryTag, out _);
+
+                            lock (_dequeueLock)
+                            {
+                                RequeueCore(msg);
+                            }
+                            ScheduleRetry();
+                            break;
+                        }
+
+                        deliveredAny = true;
+
+                        if (registration.AutoAck)
+                        {
+                            try
+                            {
+                                registration.AutoAckHandler?.Invoke(msg);
+                            }
+                            catch
+                            {
+                                lock (_dequeueLock)
+                                {
+                                    RequeueCore(msg);
+                                }
+                                ScheduleRetry();
+                                break;
+                            }
+                        }
                     }
                 }
-            }
-        }
 
                 if (!deliveredAny)
                     break;
@@ -414,7 +415,7 @@ public sealed class RabbitQueue
         }
 
         if (!Consumers.IsEmpty && HasQueuedMessages())
-            DispatchToConsumers();
+            ScheduleRetry();
     }
 
     // Trigger dispatch externally (e.g. after ack frees a prefetch slot)
