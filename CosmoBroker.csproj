@@ -27,6 +27,12 @@
     <Compile Remove="CosmoBroker.Client.Tests\**" />
     <EmbeddedResource Remove="CosmoBroker.Client.Tests\**" />
     <None Remove="CosmoBroker.Client.Tests\**" />
+    <Compile Remove="CosmoBroker.Management\**" />
+    <EmbeddedResource Remove="CosmoBroker.Management\**" />
+    <None Remove="CosmoBroker.Management\**" />
+    <Compile Remove="tools\ManagementSeeder\**" />
+    <EmbeddedResource Remove="tools\ManagementSeeder\**" />
+    <None Remove="tools\ManagementSeeder\**" />
   </ItemGroup>
 
   <ItemGroup>

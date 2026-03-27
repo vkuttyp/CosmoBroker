@@ -27,12 +27,13 @@ What works today:
 
 What is still outside current scope:
 
-- RabbitMQ management UI and HTTP API
 - RabbitMQ quorum queues
 - RabbitMQ streams parity
 - policies / operator policies
 - clustering / replication parity
 - RabbitMQ plugin ecosystem
+
+For the current CosmoBroker operational UI and API layer, see [management.md](management.md).
 
 ## Start The Broker With AMQP Enabled
 

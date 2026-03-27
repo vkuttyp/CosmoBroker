@@ -1,0 +1,139 @@
+@page "/"
+@layout MainLayout
+
+@if (_snapshot == null)
+{
+    <p><em>Loading broker snapshot...</em></p>
+}
+else if (!_snapshot.health.ok)
+{
+    <div class="alert alert-danger">
+        <strong>Monitor unavailable.</strong> @_snapshot.health.error
+    </div>
+}
+else
+{
+    <div class="hero">
+        <div>
+            <h1>CosmoBroker Overview</h1>
+            <p class="subtle">Monitor endpoint: @_snapshot.health.monitor_url</p>
+        </div>
+        <div class="hero-status">Fetched @_snapshot.health.fetched_at_utc.ToLocalTime().ToString("u")</div>
+    </div>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <span>Connections</span>
+            <strong>@(_snapshot.varz?.connections ?? 0)</strong>
+            <small>Total accepted: @(_snapshot.varz?.total_connections ?? 0)</small>
+        </div>
+        <div class="stat-card">
+            <span>JetStream Streams</span>
+            <strong>@_snapshot.jsz.streams.Count</strong>
+            <small>Total messages: @_snapshot.jsz.streams.Sum(x => x.messages)</small>
+        </div>
+        <div class="stat-card">
+            <span>RabbitMQ Queues</span>
+            <strong>@_snapshot.rmqz.queues.Count</strong>
+            <small>Unacked: @_snapshot.rmqz.queues.Sum(x => x.unacked)</small>
+        </div>
+        <div class="stat-card">
+            <span>Routes / Leafs / Gateways</span>
+            <strong>@_snapshot.routez.routes / @_snapshot.leafz.leafnodes / @_snapshot.gatewayz.gateways</strong>
+            <small>NATS topology status</small>
+        </div>
+    </div>
+
+    <div class="panel-grid">
+        <section class="panel">
+            <div class="panel-head">
+                <h2>JetStream Streams</h2>
+                <a href="/jetstream">Full view</a>
+            </div>
+            @if (_snapshot.jsz.streams.Count == 0)
+            {
+                <p class="subtle">No streams configured.</p>
+            }
+            else
+            {
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Messages</th>
+                            <th>Bytes</th>
+                            <th>Consumers</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var stream in _snapshot.jsz.streams.Take(5))
+                        {
+                            <tr>
+                                <td>@stream.name</td>
+                                <td>@stream.messages</td>
+                                <td>@FormatBytes(stream.bytes)</td>
+                                <td>@stream.consumers</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+
+        <section class="panel">
+            <div class="panel-head">
+                <h2>RabbitMQ Queues</h2>
+                <a href="/rabbitmq">Full view</a>
+            </div>
+            @if (_snapshot.rmqz.queues.Count == 0)
+            {
+                <p class="subtle">No RabbitMQ queues configured.</p>
+            }
+            else
+            {
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Messages</th>
+                            <th>Consumers</th>
+                            <th>Unacked</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var queue in _snapshot.rmqz.queues.OrderByDescending(x => x.messages).Take(5))
+                        {
+                            <tr>
+                                <td>@queue.name</td>
+                                <td>@queue.messages</td>
+                                <td>@queue.consumers</td>
+                                <td>@queue.unacked</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+    </div>
+}
+
+@code {
+    private BrokerSnapshot? _snapshot;
+
+    protected override async ValueTask OnInitializedAsync()
+    {
+        var client = HttpContext.RequestServices.GetRequiredService<BrokerMonitorClient>();
+        _snapshot = await client.GetSnapshotAsync();
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes >= 1024L * 1024 * 1024)
+            return $"{bytes / (1024d * 1024 * 1024):F2} GB";
+        if (bytes >= 1024L * 1024)
+            return $"{bytes / (1024d * 1024):F2} MB";
+        if (bytes >= 1024L)
+            return $"{bytes / 1024d:F2} KB";
+        return $"{bytes} B";
+    }
+}

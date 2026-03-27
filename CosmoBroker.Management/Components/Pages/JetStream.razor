@@ -1,0 +1,55 @@
+@page "/jetstream"
+@layout MainLayout
+
+<h1>JetStream</h1>
+<p class="subtle">Streams and consumer footprint from the broker's JetStream-style persistence layer.</p>
+
+@if (_jetStream == null)
+{
+    <p><em>Loading JetStream stats...</em></p>
+}
+else if (_jetStream.streams.Count == 0)
+{
+    <p class="subtle">No JetStream streams configured.</p>
+}
+else
+{
+    <div class="panel-grid single">
+        @foreach (var stream in _jetStream.streams.OrderByDescending(x => x.messages))
+        {
+            <section class="panel">
+                <div class="panel-head">
+                    <h2>@stream.name</h2>
+                    <span>@stream.messages msgs</span>
+                </div>
+                <div class="detail-grid">
+                    <div><strong>Subjects</strong><span>@string.Join(", ", stream.subjects)</span></div>
+                    <div><strong>Bytes</strong><span>@FormatBytes(stream.bytes)</span></div>
+                    <div><strong>Last Sequence</strong><span>@stream.last_seq</span></div>
+                    <div><strong>Consumers</strong><span>@stream.consumers</span></div>
+                </div>
+            </section>
+        }
+    </div>
+}
+
+@code {
+    private JetStreamStats? _jetStream;
+
+    protected override async ValueTask OnInitializedAsync()
+    {
+        var client = HttpContext.RequestServices.GetRequiredService<BrokerMonitorClient>();
+        _jetStream = await client.GetJetStreamAsync();
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes >= 1024L * 1024 * 1024)
+            return $"{bytes / (1024d * 1024 * 1024):F2} GB";
+        if (bytes >= 1024L * 1024)
+            return $"{bytes / (1024d * 1024):F2} MB";
+        if (bytes >= 1024L)
+            return $"{bytes / 1024d:F2} KB";
+        return $"{bytes} B";
+    }
+}

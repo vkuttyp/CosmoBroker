@@ -1,0 +1,24 @@
+@inherits Microsoft.AspNetCore.Components.ComponentBase
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="/app.css" />
+    <link rel="stylesheet" href="/CosmoBroker.Management.styles.css" />
+    <title>CosmoBroker Management</title>
+</head>
+
+<body>
+    @ChildContent
+</body>
+
+</html>
+
+@code {
+    [Microsoft.AspNetCore.Components.Parameter]
+    public Microsoft.AspNetCore.Components.RenderFragment ChildContent { get; set; } = default!;
+}

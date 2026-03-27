@@ -56,12 +56,22 @@ Currently covered in the native AMQP path:
 
 Current RabbitMQ gap areas are mostly advanced product features rather than core AMQP correctness:
 
-- management UI / HTTP API
 - quorum queues
 - streams parity with RabbitMQ streams
 - policies / operator policies
 - clustering and replication parity with RabbitMQ
 - plugin ecosystem parity
+
+## Management UI And API
+
+CosmoBroker now includes a separate management application built on `CosmoApiServer`. It provides a server-rendered dashboard plus a small HTTP API over the broker's monitor endpoint.
+
+- dashboard project: `CosmoBroker.Management`
+- UI pages: `/`, `/connections`, `/jetstream`, `/rabbitmq`
+- API routes: `/api/health`, `/api/overview`, `/api/varz`, `/api/connections`, `/api/routes`, `/api/gateways`, `/api/leafs`, `/api/jetstream`, `/api/rabbitmq`
+- optional local demo seeder: `tools/ManagementSeeder`
+
+For setup and usage, see [docs/management.md](docs/management.md).
 
 ## Getting Started
 

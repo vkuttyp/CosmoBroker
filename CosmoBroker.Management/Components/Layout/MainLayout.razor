@@ -1,0 +1,25 @@
+@inherits Microsoft.AspNetCore.Components.LayoutComponentBase
+
+<div class="shell">
+    <aside class="sidebar">
+        <div class="brand">
+            <a href="/">CosmoBroker</a>
+            <span>Management</span>
+        </div>
+        <NavMenu />
+    </aside>
+
+    <main class="main">
+        <header class="topbar">
+            <div>
+                <strong>Broker Control Plane</strong>
+                <div class="subtle">HTTP API and SSR dashboard powered by CosmoApiServer</div>
+            </div>
+            <a class="top-link" href="/api/overview" target="_blank">Open API JSON</a>
+        </header>
+
+        <section class="content">
+            @Body
+        </section>
+    </main>
+</div>

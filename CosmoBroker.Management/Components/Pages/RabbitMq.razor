@@ -1,0 +1,109 @@
+@page "/rabbitmq"
+@layout MainLayout
+
+<h1>RabbitMQ</h1>
+<p class="subtle">RabbitMQ-compatible exchanges and queues surfaced from CosmoBroker's native AMQP layer.</p>
+
+@if (_rabbitMq == null)
+{
+    <p><em>Loading RabbitMQ stats...</em></p>
+}
+else
+{
+    <div class="stats-grid two">
+        <div class="stat-card">
+            <span>Exchanges</span>
+            <strong>@_rabbitMq.exchanges.Count</strong>
+        </div>
+        <div class="stat-card">
+            <span>Queues</span>
+            <strong>@_rabbitMq.queues.Count</strong>
+        </div>
+    </div>
+
+    <div class="panel-grid">
+        <section class="panel">
+            <div class="panel-head">
+                <h2>Queues</h2>
+            </div>
+            @if (_rabbitMq.queues.Count == 0)
+            {
+                <p class="subtle">No queues.</p>
+            }
+            else
+            {
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Vhost</th>
+                            <th>Name</th>
+                            <th>Messages</th>
+                            <th>Consumers</th>
+                            <th>Unacked</th>
+                            <th>Durable</th>
+                            <th>DLX</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var queue in _rabbitMq.queues.OrderByDescending(x => x.messages))
+                        {
+                            <tr>
+                                <td>@queue.vhost</td>
+                                <td>@queue.name</td>
+                                <td>@queue.messages</td>
+                                <td>@queue.consumers</td>
+                                <td>@queue.unacked</td>
+                                <td>@(queue.durable ? "yes" : "no")</td>
+                                <td>@(string.IsNullOrWhiteSpace(queue.dlx) ? "-" : queue.dlx)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+
+        <section class="panel">
+            <div class="panel-head">
+                <h2>Exchanges</h2>
+            </div>
+            @if (_rabbitMq.exchanges.Count == 0)
+            {
+                <p class="subtle">No exchanges.</p>
+            }
+            else
+            {
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Vhost</th>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Durable</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var exchange in _rabbitMq.exchanges.OrderBy(x => x.vhost).ThenBy(x => x.name))
+                        {
+                            <tr>
+                                <td>@exchange.vhost</td>
+                                <td>@exchange.name</td>
+                                <td>@exchange.type</td>
+                                <td>@(exchange.durable ? "yes" : "no")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+    </div>
+}
+
+@code {
+    private RabbitMqStats? _rabbitMq;
+
+    protected override async ValueTask OnInitializedAsync()
+    {
+        var client = HttpContext.RequestServices.GetRequiredService<BrokerMonitorClient>();
+        _rabbitMq = await client.GetRabbitMqAsync();
+    }
+}

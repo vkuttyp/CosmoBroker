@@ -86,9 +86,13 @@ public class MonitoringService
             {
                 responseData = _server.GetJsz();
             }
+            else if (path == "/rmqz")
+            {
+                responseData = _server.GetRmqz();
+            }
             else
             {
-                responseData = new { error = "Not Found", paths = new[] { "/varz", "/connz", "/routez", "/leafz", "/gatewayz", "/jsz" } };
+                responseData = new { error = "Not Found", paths = new[] { "/varz", "/connz", "/routez", "/leafz", "/gatewayz", "/jsz", "/rmqz" } };
             }
 
             string json = JsonSerializer.Serialize(responseData, new JsonSerializerOptions { WriteIndented = true });

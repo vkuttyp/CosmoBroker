@@ -2,5 +2,6 @@
   <Project Path="CosmoBroker.Client.Tests/CosmoBroker.Client.Tests.csproj" />
   <Project Path="CosmoBroker.Client/CosmoBroker.Client.csproj" />
   <Project Path="CosmoBroker.Benchmarks/CosmoBroker.Benchmarks.csproj" />
+  <Project Path="CosmoBroker.Management/CosmoBroker.Management.csproj" />
   <Project Path="CosmoBroker.csproj" />
 </Solution>

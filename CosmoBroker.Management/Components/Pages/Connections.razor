@@ -1,0 +1,67 @@
+@page "/connections"
+@layout MainLayout
+
+<h1>Connections</h1>
+<p class="subtle">Live NATS protocol connections as reported by the broker monitor endpoint.</p>
+
+@if (_connections == null)
+{
+    <p><em>Loading connections...</em></p>
+}
+else if (_connections.connections.Count == 0)
+{
+    <p class="subtle">No active client connections.</p>
+}
+else
+{
+    <table class="table table-striped">
+        <thead>
+            <tr>
+                <th>Remote</th>
+                <th>Protocol</th>
+                <th>Account</th>
+                <th>Subs</th>
+                <th>Msg In</th>
+                <th>Msg Out</th>
+                <th>Bytes In</th>
+                <th>Bytes Out</th>
+                <th>Drops</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var conn in _connections.connections.OrderByDescending(x => x.msg_out + x.msg_in))
+            {
+                <tr>
+                    <td>@conn.remote_addr</td>
+                    <td>@conn.protocol</td>
+                    <td>@(string.IsNullOrWhiteSpace(conn.account) ? "-" : conn.account)</td>
+                    <td>@conn.subscriptions</td>
+                    <td>@conn.msg_in</td>
+                    <td>@conn.msg_out</td>
+                    <td>@FormatBytes(conn.bytes_in)</td>
+                    <td>@FormatBytes(conn.bytes_out)</td>
+                    <td>@conn.msg_drop</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private ConnectionList? _connections;
+
+    protected override async ValueTask OnInitializedAsync()
+    {
+        var client = HttpContext.RequestServices.GetRequiredService<BrokerMonitorClient>();
+        _connections = await client.GetConnectionsAsync();
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes >= 1024L * 1024)
+            return $"{bytes / (1024d * 1024):F2} MB";
+        if (bytes >= 1024L)
+            return $"{bytes / 1024d:F2} KB";
+        return $"{bytes} B";
+    }
+}
