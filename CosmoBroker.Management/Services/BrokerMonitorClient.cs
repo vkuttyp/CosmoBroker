@@ -1,5 +1,6 @@
-using System.Net.Http.Json;
+using System.Linq;
 using System.Net;
+using System.Net.Http.Json;
 using CosmoBroker.Management.Models;
 
 namespace CosmoBroker.Management.Services;
@@ -132,6 +133,49 @@ public sealed class BrokerMonitorClient
 
         return result;
     }
+
+    public async Task<StreamRetentionResult> SetStreamRetentionAsync(StreamRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        var relativePath = $"rmq/stream/retention?{BuildQuery(
+            ("vhost", request.vhost),
+            ("queue", request.queue),
+            ("max_length_messages", request.max_length_messages?.ToString()),
+            ("max_length_bytes", request.max_length_bytes?.ToString()),
+            ("max_age_ms", request.max_age_ms?.ToString()))}";
+
+        using var response = await _httpClient.PostAsync(relativePath, null, cancellationToken);
+        var result = await response.Content.ReadFromJsonAsync<StreamRetentionResult>(cancellationToken: cancellationToken)
+            ?? new StreamRetentionResult { ok = false, error = "Empty response from broker monitor." };
+
+        if (!response.IsSuccessStatusCode && string.IsNullOrWhiteSpace(result.error))
+            result.error = $"Broker monitor returned {(int)response.StatusCode}.";
+
+        return result;
+    }
+
+    public async Task<SuperStreamRetentionResult> SetSuperStreamRetentionAsync(SuperStreamRetentionRequest request, CancellationToken cancellationToken = default)
+    {
+        var relativePath = $"rmq/super-stream/retention?{BuildQuery(
+            ("vhost", request.vhost),
+            ("exchange", request.exchange),
+            ("max_length_messages", request.max_length_messages?.ToString()),
+            ("max_length_bytes", request.max_length_bytes?.ToString()),
+            ("max_age_ms", request.max_age_ms?.ToString()))}";
+
+        using var response = await _httpClient.PostAsync(relativePath, null, cancellationToken);
+        var result = await response.Content.ReadFromJsonAsync<SuperStreamRetentionResult>(cancellationToken: cancellationToken)
+            ?? new SuperStreamRetentionResult { ok = false, error = "Empty response from broker monitor." };
+
+        if (!response.IsSuccessStatusCode && string.IsNullOrWhiteSpace(result.error))
+            result.error = $"Broker monitor returned {(int)response.StatusCode}.";
+
+        return result;
+    }
+
+    private static string BuildQuery(params (string Key, string? Value)[] values)
+        => string.Join("&", values
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Value))
+            .Select(pair => $"{pair.Key}={WebUtility.UrlEncode(pair.Value!)}"));
 
     private async Task<T?> GetAsync<T>(string relativePath, CancellationToken cancellationToken)
     {
