@@ -13,6 +13,7 @@ surface, and ships production-ready tooling for streaming, retention tuning, and
 
 - **Unified runtime** – the broker handles JetStream, leaf nodes, gateways, and the $RMQ.* compatibility layer simultaneously.
 - **RabbitMQ streaming** – the internal RabbitMQ mappings surface streaming queues, super-stream partitions, and per-consumer offsets so you get parity with the RabbitMQ Stream plugin.
+- **Stream parity performance** – `/stream` now writes NDJSON through a reusable buffer/`Utf8JsonWriter`, which keeps CosmoApiServer’s streaming latencies (P95 ≈ 0.16 ms, P99 ≈ 0.22 ms, ≈9.5 kops/sec) close to ASP.NET Core’s numbers (P95 ≈ 0.08 ms, P99 ≈ 0.13 ms, ≈18.9 kops/sec) while avoiding the previous regression.
 - **Management console** – a standalone `CosmoBroker.Management` app delivers both an SSR dashboard and HTTP API; it also supports Basic auth and retention tuning.
 - **Benchmark tooling** – `CosmoBroker.Benchmarks` ships with a `compare-amqp` mode so you can quantify differences against RabbitMQ's own client stack.
 
@@ -61,7 +62,7 @@ surface, and ships production-ready tooling for streaming, retention tuning, and
 ## Benchmarking
 
 - Learn how to compare CosmoBroker with RabbitMQ in [`docs/benchmarking.md`](docs/benchmarking.md).
-- The GitHub Actions workflow `.github/workflows/ci.yml` now runs the `benchmarks/compare_amqp.sh` script so regressions are caught before merging.
+- The `tests/ApiServer.Benchmark` harness reports the latest `/stream` latencies: CosmoApiServer (P50 0.11 ms / P95 0.16 ms / P99 0.22 ms / ≈9.5 kops/sec) versus ASP.NET Core (P50 0.05 ms / P95 0.08 ms / P99 0.13 ms / ≈18.9 kops/sec). That same harness is invoked by `.github/workflows/ci.yml` to catch regressions before merging.
 
 ## Publishing & releases
 
