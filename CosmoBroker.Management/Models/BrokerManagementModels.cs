@@ -207,6 +207,46 @@ public sealed class SuperStreamRoutePreviewResult
     public string? partition { get; set; }
 }
 
+public sealed class StreamRetentionRequest
+{
+    public string vhost { get; set; } = "/";
+    public string queue { get; set; } = string.Empty;
+    public long? max_length_messages { get; set; }
+    public long? max_length_bytes { get; set; }
+    public long? max_age_ms { get; set; }
+}
+
+public sealed class StreamRetentionResult
+{
+    public bool ok { get; set; }
+    public string? error { get; set; }
+    public string vhost { get; set; } = "/";
+    public string queue { get; set; } = string.Empty;
+    public long? max_length_messages { get; set; }
+    public long? max_length_bytes { get; set; }
+    public long? max_age_ms { get; set; }
+}
+
+public sealed class SuperStreamRetentionRequest
+{
+    public string vhost { get; set; } = "/";
+    public string exchange { get; set; } = string.Empty;
+    public long? max_length_messages { get; set; }
+    public long? max_length_bytes { get; set; }
+    public long? max_age_ms { get; set; }
+}
+
+public sealed class SuperStreamRetentionResult
+{
+    public bool ok { get; set; }
+    public string? error { get; set; }
+    public string vhost { get; set; } = "/";
+    public string exchange { get; set; } = string.Empty;
+    public long? max_length_messages { get; set; }
+    public long? max_length_bytes { get; set; }
+    public long? max_age_ms { get; set; }
+}
+
 public sealed class RabbitExchangeStats
 {
     public string? vhost { get; set; }
