@@ -204,7 +204,7 @@ internal sealed class StreamConnection : IAsyncDisposable
         var properties = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["product"] = "CosmoBroker Stream",
-            ["version"] = "1.2.0",
+            ["version"] = "1.3.0",
             ["platform"] = ".NET",
             ["copyright"] = "CosmoBroker",
             ["information"] = "RabbitMQ Stream-compatible slice"
@@ -300,7 +300,7 @@ internal sealed class StreamConnection : IAsyncDisposable
             code = 8;
         var properties = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["advertised_host"] = "localhost",
+            ["advertised_host"] = _streamAdvertisedHost,
             ["stream_port"] = _streamPort.ToString()
         };
 

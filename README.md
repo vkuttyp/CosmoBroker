@@ -61,6 +61,7 @@ Currently covered in the native AMQP path:
 - persisted stream consumer resume and management-visible stream lag
 - a first partitioned stream foundation via `x-super-stream` with `x-partitions`
 - native RabbitMQ Stream protocol for create/delete stream, publish, subscribe, offset store/query, metadata, route, partitions, stream stats, and single-active-consumer
+- repo-backed native stream offset and publisher-sequence recovery across broker restart
 - official `RabbitMQ.Stream.Client` interop for stream, super-stream, and single-active-consumer flows
 
 Current RabbitMQ gap areas are mostly advanced product features rather than core AMQP correctness:
@@ -221,6 +222,15 @@ That combined image starts:
 | `COSMOBROKER_STREAM_ADVERTISED_HOST` | Hostname advertised to RabbitMQ stream clients in metadata responses |
 | `COSMOBROKER_REPO` | Repository connection string |
 | `COSMOBROKER_CONFIG` | Optional config file path |
+
+### Docker Compose
+
+The repo ships `docker/docker-compose.yml`, which defines both split and combined deployments using the published Docker images.
+
+- **Split deployment** – run the `cosmobroker` service (broker + listeners) alongside `management` (CosmoApiServer UI pointing at the monitor endpoint) when you prefer separate containers.
+- **Combined deployment** – run the `combined` service to start `vkuttyp/cosmobroker-server-management:latest`, the single-image bundle of broker + UI.
+
+Use `docker compose -f docker/docker-compose.yml up cosmobroker management` for the split setup or `docker compose -f docker/docker-compose.yml up combined` for the all-in-one experience. Each service exposes health checks so you can wire them into orchestration tooling.
 
 ## Example Usage
 

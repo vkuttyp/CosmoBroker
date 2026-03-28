@@ -8,6 +8,26 @@ CosmoBroker exposes a native AMQP port that standard RabbitMQ clients can use di
 
 CosmoBroker also exposes a native RabbitMQ Stream listener for standard `RabbitMQ.Stream.Client` workloads.
 
+## Feature Highlights
+
+- **Dual protocol surface** – NATS is the default, but you can enable AMQP 0-9-1 and the RabbitMQ Stream protocol independently via runtime flags.
+- **Native RabbitMQ tooling** – `RabbitMQ.Client` and `RabbitMQ.Stream.Client` talk to CosmoBroker without adapters, including standard exchanges, queues, confirms, transactions, stream offsets, and stream metadata.
+- **Management UI / API** – A CosmoApiServer-based dashboard (`CosmoBroker.Management`) proxies the broker monitor stats, exposes per-protocol views, and lets you reset stream offsets or adjust retention limits without redeploying.
+- **Streaming parity foundation** – You get `x-queue-type=stream`, `x-stream-offset`, `x-super-stream` partitions, and logical super-stream metadata, with a plan to layer in more RabbitMQ stream/partition controls when the protocol surface expands.
+- **Isolation switches** – Toggle each listener independently so a deployment can surface just the protocols the users need.
+
+## Protocol Switches
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `COSMOBROKER_ENABLE_NATS` | `true` | Turn the NATS listener on/off. Disabling it keeps the monitoring endpoint and any enabled RabbitMQ listeners without the NATS port. |
+| `COSMOBROKER_ENABLE_AMQP` | `false` | Enable the native AMQP 0-9-1 listener. When false, CosmoBroker still runs but the classic RabbitMQ port remains closed. |
+| `COSMOBROKER_AMQP_PORT` | `5672` (when AMQP enabled) | Controls the port used by `RabbitMQ.Client`. |
+| `COSMOBROKER_ENABLE_RMQ_STREAM` | `false` | Enable the RabbitMQ Stream protocol listener (`RabbitMQ.Stream.Client`). Runs on `COSMOBROKER_STREAM_PORT` when enabled. |
+| `COSMOBROKER_STREAM_PORT` | `5552` (when stream enabled) | Port for the stream protocol listener. |
+
+Disable both `COSMOBROKER_ENABLE_AMQP` and `COSMOBROKER_ENABLE_RMQ_STREAM` when you only want the NATS surface (or vice versa). Passing command line ports still works, and the `CosmoBroker.Server` host logs the enabled listeners on startup.
+
 Client separation:
 
 - use `CosmoBroker.Client` for CosmoBroker's NATS-compatible API
@@ -125,6 +145,17 @@ COSMOBROKER_ENABLE_RMQ_STREAM=true \
 COSMOBROKER_STREAM_PORT=5552 \
 dotnet run --project CosmoBroker.Server/CosmoBroker.Server.csproj
 ```
+
+## Management UI & HTTP API
+
+CosmoBroker ships an independent management host built with `CosmoApiServer` that sits on top of the monitor endpoint. It exposes:
+
+- server-rendered dashboards (`/`, `/connections`, `/jetstream`, `/rabbitmq`) with stream and super-stream telemetry
+- HTTP JSON APIs such as `/api/overview`, `/api/rabbitmq`, `/api/rabbitmq/super-streams`, and `/api/rabbitmq/streams/reset-offset`
+- retention tuning and offset reset forms that call the JSON API behind the scenes so you can operate streams without touching the broker binary
+- opt-in Basic auth via `COSMOBROKER_MANAGEMENT_USERNAME` / `COSMOBROKER_MANAGEMENT_PASSWORD`, with `COSMOBROKER_MANAGEMENT_ALLOW_ANONYMOUS_HEALTH` controlling whether health is open
+
+See [docs/management.md](management.md) for setup, UI guidance, and sample API calls.
 
 ## Default Authentication
 
@@ -353,6 +384,8 @@ The current native stream listener supports:
 - route and partitions queries
 - native super-stream create/delete
 - broker-scoped publisher sequence recovery
+- repo-backed publisher-sequence recovery across broker restart
+- repo-backed stream offset recovery across broker restart
 - single-active-consumer negotiation and promotion
 
 Advanced RabbitMQ Streams features like replication, segment-level operational controls, and full cluster behavior are still outside current scope.

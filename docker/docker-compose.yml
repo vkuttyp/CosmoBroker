@@ -1,0 +1,74 @@
+version: "3.9"
+
+services:
+  cosmobroker:
+    image: vkuttyp/cosmobroker-server:latest
+    container_name: cosmobroker
+    restart: unless-stopped
+    ports:
+      - 4222:4222   # NATS
+      - 8222:8222   # monitor
+      - 5672:5672   # AMQP
+      - 5552:5552   # RabbitMQ stream
+    environment:
+      COSMOBROKER_ENABLE_NATS: "true"
+      COSMOBROKER_ENABLE_AMQP: "true"
+      COSMOBROKER_ENABLE_RMQ_STREAM: "true"
+      COSMOBROKER_AMQP_PORT: 5672
+      COSMOBROKER_STREAM_PORT: 5552
+      COSMOBROKER_PORT: 4222
+      COSMOBROKER_MONITOR_PORT: 8222
+      COSMOBROKER_MANAGEMENT_PORT: 9091
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'nc -z localhost 4222' || exit 1'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  management:
+    image: vkuttyp/cosmobroker-management:latest
+    container_name: cosmobroker-management
+    restart: unless-stopped
+    ports:
+      - 9091:9091
+    depends_on:
+      - cosmobroker
+    environment:
+      COSMOBROKER_MONITOR_URL: http://cosmobroker:8222
+      COSMOBROKER_MANAGEMENT_PORT: 9091
+      COSMOBROKER_MANAGEMENT_USERNAME: admin
+      COSMOBROKER_MANAGEMENT_PASSWORD: change-me
+      COSMOBROKER_MANAGEMENT_ALLOW_ANONYMOUS_HEALTH: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'curl -f http://127.0.0.1:9091/api/health || exit 1'" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  combined:
+    image: vkuttyp/cosmobroker-server-management:latest
+    container_name: cosmobroker-combined
+    restart: unless-stopped
+    ports:
+      - 4222:4222
+      - 8222:8222
+      - 5672:5672
+      - 5552:5552
+      - 9091:9091
+    environment:
+      # The combined image bundles the broker + UI; enable all listeners for parity.
+      COSMOBROKER_ENABLE_NATS: "true"
+      COSMOBROKER_ENABLE_AMQP: "true"
+      COSMOBROKER_ENABLE_RMQ_STREAM: "true"
+      COSMOBROKER_MANAGEMENT_USERNAME: admin
+      COSMOBROKER_MANAGEMENT_PASSWORD: change-me
+      COSMOBROKER_MANAGEMENT_ALLOW_ANONYMOUS_HEALTH: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'curl -f http://127.0.0.1:9091/api/health || exit 1'" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  default:
+    name: cosmobroker-net

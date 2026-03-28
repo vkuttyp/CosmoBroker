@@ -26,8 +26,6 @@ if (!Directory.Exists(staticRoot))
 
 builder.ListenOn(managementPort);
 builder.UseExceptionHandler();
-builder.UseStaticFiles(staticRoot);
-builder.AddRazorComponents();
 
 builder.Services.AddSingleton(new BrokerManagementOptions
 {
@@ -42,6 +40,8 @@ builder.Services.AddSingleton(new ManagementAuthOptions
 });
 builder.Services.AddSingleton<BrokerMonitorClient>();
 builder.UseMiddleware<ManagementBasicAuthMiddleware>();
+builder.UseStaticFiles(staticRoot);
+builder.AddRazorComponents();
 
 var app = builder.Build();
 
@@ -248,6 +248,87 @@ app.MapPost("/rabbitmq/super-streams/route-preview", async ctx =>
     ctx.Response.Headers["Location"] = $"/rabbitmq?{query}";
 });
 
+app.MapPost("/api/rabbitmq/streams/retention", async ctx =>
+{
+    var client = ctx.RequestServices.GetRequiredService<BrokerMonitorClient>();
+    var request = ctx.Request.ReadJson<StreamRetentionRequest>() ?? new StreamRetentionRequest();
+    var result = await client.SetStreamRetentionAsync(request, ctx.RequestAborted);
+    if (!result.ok)
+    {
+        ctx.Response.StatusCode = 400;
+        ctx.Response.ReasonPhrase = "Bad Request";
+    }
+    ctx.Response.WriteJson(result);
+});
+
+app.MapPost("/api/rabbitmq/super-streams/retention", async ctx =>
+{
+    var client = ctx.RequestServices.GetRequiredService<BrokerMonitorClient>();
+    var request = ctx.Request.ReadJson<SuperStreamRetentionRequest>() ?? new SuperStreamRetentionRequest();
+    var result = await client.SetSuperStreamRetentionAsync(request, ctx.RequestAborted);
+    if (!result.ok)
+    {
+        ctx.Response.StatusCode = 400;
+        ctx.Response.ReasonPhrase = "Bad Request";
+    }
+    ctx.Response.WriteJson(result);
+});
+
+app.MapPost("/rabbitmq/streams/retention", async ctx =>
+{
+    var client = ctx.RequestServices.GetRequiredService<BrokerMonitorClient>();
+    var form = ctx.Request.ReadForm();
+    var request = new StreamRetentionRequest
+    {
+        vhost = form.Fields.TryGetValue("retention-vhost", out var vhost) && !string.IsNullOrWhiteSpace(vhost) ? vhost : "/",
+        queue = form.Fields.TryGetValue("retention-queue", out var queue) ? queue : string.Empty,
+        max_length_messages = ParseNullableLong(form.Fields.TryGetValue("retention-max-messages", out var maxLength) ? maxLength : null),
+        max_length_bytes = ParseNullableLong(form.Fields.TryGetValue("retention-max-bytes", out var maxBytes) ? maxBytes : null),
+        max_age_ms = ParseNullableLong(form.Fields.TryGetValue("retention-max-age-ms", out var maxAge) ? maxAge : null)
+    };
+
+    var result = await client.SetStreamRetentionAsync(request, ctx.RequestAborted);
+    var message = result.ok
+        ? $"Updated stream retention on {request.queue}."
+        : (result.error ?? "Unable to update stream retention.");
+    var query = $"status={(result.ok ? "ok" : "error")}&message={Uri.EscapeDataString(message)}";
+    ctx.Response.StatusCode = 302;
+    ctx.Response.ReasonPhrase = "Found";
+    ctx.Response.Headers["Location"] = $"/rabbitmq?{query}";
+});
+
+app.MapPost("/rabbitmq/super-streams/retention", async ctx =>
+{
+    var client = ctx.RequestServices.GetRequiredService<BrokerMonitorClient>();
+    var form = ctx.Request.ReadForm();
+    var request = new SuperStreamRetentionRequest
+    {
+        vhost = form.Fields.TryGetValue("super-retention-vhost", out var vhost) && !string.IsNullOrWhiteSpace(vhost) ? vhost : "/",
+        exchange = form.Fields.TryGetValue("super-retention-exchange", out var exchange) ? exchange : string.Empty,
+        max_length_messages = ParseNullableLong(form.Fields.TryGetValue("super-retention-max-messages", out var maxLength) ? maxLength : null),
+        max_length_bytes = ParseNullableLong(form.Fields.TryGetValue("super-retention-max-bytes", out var maxBytes) ? maxBytes : null),
+        max_age_ms = ParseNullableLong(form.Fields.TryGetValue("super-retention-max-age-ms", out var maxAge) ? maxAge : null)
+    };
+
+    var result = await client.SetSuperStreamRetentionAsync(request, ctx.RequestAborted);
+    var message = result.ok
+        ? $"Updated retention on {request.exchange}."
+        : (result.error ?? "Unable to update super stream retention.");
+    var query = $"status={(result.ok ? "ok" : "error")}&message={Uri.EscapeDataString(message)}";
+    if (!string.IsNullOrWhiteSpace(request.exchange))
+        query += $"&super={Uri.EscapeDataString(request.exchange)}&vhost={Uri.EscapeDataString(request.vhost)}";
+    ctx.Response.StatusCode = 302;
+    ctx.Response.ReasonPhrase = "Found";
+    ctx.Response.Headers["Location"] = $"/rabbitmq?{query}";
+});
+
 Console.WriteLine($"CosmoBroker.Management running on http://localhost:{managementPort}");
 Console.WriteLine($"Tracking broker monitor endpoint: {monitorBaseUrl}");
 app.Run();
+
+static long? ParseNullableLong(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+        return null;
+    return long.TryParse(value, out var result) ? result : null;
+}
