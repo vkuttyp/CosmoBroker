@@ -342,6 +342,45 @@ namespace CosmoBroker.Services
                         return System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(info);
                     }
                 }
+                else if (parts.Length >= 6 && parts[3] == "MSG" && parts[4] == "GET")
+                {
+                    string streamName = parts[5];
+                    MsgGetRequest? req = null;
+                    try { req = System.Text.Json.JsonSerializer.Deserialize<MsgGetRequest>(payload, jsonOptions); } catch { }
+
+                    StreamMessage? msg = null;
+                    if (req?.LastBySubj != null && _streams.TryGetValue(streamName, out var msgStream))
+                    {
+                        msg = msgStream.Messages.LastOrDefault(m => m.Subject == req.LastBySubj);
+
+                        if (msg == null && _repo != null)
+                        {
+                            var persisted = await _repo.GetLastJetStreamMessageBySubjectAsync(streamName, req.LastBySubj);
+                            if (persisted != null)
+                                msg = new StreamMessage { Sequence = persisted.Id, Subject = persisted.Subject, Payload = persisted.Payload, Timestamp = DateTime.UtcNow };
+                        }
+                    }
+
+                    if (msg != null)
+                    {
+                        var found = new {
+                            type = "io.nats.jetstream.api.v1.stream_msg_get_response",
+                            message = new {
+                                subject = msg.Subject,
+                                seq = msg.Sequence,
+                                data = Convert.ToBase64String(msg.Payload),
+                                time = msg.Timestamp
+                            }
+                        };
+                        return System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(found);
+                    }
+
+                    var notFound = new {
+                        type = "io.nats.jetstream.api.v1.stream_msg_get_response",
+                        error = new { code = 404, description = "message not found" }
+                    };
+                    return System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(notFound);
+                }
                 else if (parts.Length >= 4 && (parts[3] == "CREATE" || parts[3] == "UPDATE"))
                 {
                     string streamName = parts[4];

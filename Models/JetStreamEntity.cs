@@ -28,8 +28,12 @@ namespace CosmoBroker.JetStream.Models
         [System.Text.Json.Serialization.JsonPropertyName("max_bytes")]
         public long MaxBytes { get; set; } = -1;
 
+        /// <summary>Retention age in nanoseconds (NATS wire format). Zero means unlimited.</summary>
         [System.Text.Json.Serialization.JsonPropertyName("max_age")]
-        public TimeSpan MaxAge { get; set; } = TimeSpan.Zero;
+        public long MaxAgeNs { get; set; } = 0;
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public TimeSpan MaxAge => MaxAgeNs > 0 ? TimeSpan.FromTicks(MaxAgeNs / 100) : TimeSpan.Zero;
 
         [System.Text.Json.Serialization.JsonPropertyName("replicas")]
         public int Replicas { get; set; } = 1;
@@ -54,6 +58,15 @@ namespace CosmoBroker.JetStream.Models
     {
         [System.Text.Json.Serialization.JsonPropertyName("name")]
         public string Name { get; set; } = string.Empty;
+    }
+
+    public class MsgGetRequest
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("last_by_subj")]
+        public string? LastBySubj { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("seq")]
+        public long Seq { get; set; }
     }
 
     public class JetStreamEntity

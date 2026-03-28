@@ -1141,6 +1141,22 @@ public class MessageRepository
         }).ToList();
     }
 
+    public async Task<PersistedMessage?> GetLastJetStreamMessageBySubjectAsync(string streamName, string subject, CancellationToken ct = default)
+    {
+        var query = _provider == DatabaseProvider.MsSql
+            ? "SELECT TOP 1 id, subject, payload FROM mq_messages WHERE stream_name = @stream AND subject = @subject ORDER BY id DESC"
+            : "SELECT id, subject, payload FROM mq_messages WHERE stream_name = @stream AND subject = @subject ORDER BY id DESC LIMIT 1";
+        var rows = await _db.QueryAsync(query, new[] {
+            SqlParameter.Named("stream", SqlValue.From(streamName)),
+            SqlParameter.Named("subject", SqlValue.From(subject))
+        }, ct: ct);
+        return rows.Select(row => new PersistedMessage {
+            Id = row["id"].AsInt() ?? 0,
+            Subject = row["subject"].AsString() ?? string.Empty,
+            Payload = row["payload"].AsBytes() ?? Array.Empty<byte>()
+        }).FirstOrDefault();
+    }
+
     public Task SaveRabbitExchangeAsync(string name, string type, bool durable, bool autoDelete, int? superStreamPartitions = null, CancellationToken ct = default)
         => SaveRabbitExchangeAsync("/", name, type, durable, autoDelete, superStreamPartitions, ct);
 
