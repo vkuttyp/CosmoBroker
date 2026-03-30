@@ -4,4 +4,5 @@
   <Project Path="CosmoBroker.Benchmarks/CosmoBroker.Benchmarks.csproj" />
   <Project Path="CosmoBroker.Management/CosmoBroker.Management.csproj" />
   <Project Path="CosmoBroker.csproj" />
+  <Project Path="CosmoBroker.Server/CosmoBroker.Server.csproj" />
 </Solution>
