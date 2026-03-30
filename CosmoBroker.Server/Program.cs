@@ -118,28 +118,64 @@ class Program
         if (!string.IsNullOrWhiteSpace(repoConnection))
             repo = new MessageRepository(repoConnection);
 
-        var server = new BrokerServer(
-            port: port,
-            amqpPort: amqpPort,
-            streamPort: streamPort,
-            repo: repo,
-            monitorPort: monitorPort,
-            streamAdvertisedHost: streamAdvertisedHost);
+        static int ReadPositiveInt(string envName, int fallback)
+        {
+            var value = Environment.GetEnvironmentVariable(envName);
+            return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
+        }
+
+        int startupRetries = ReadPositiveInt("COSMOBROKER_START_RETRIES", 30);
+        int startupRetryDelayMs = ReadPositiveInt("COSMOBROKER_START_RETRY_DELAY_MS", 2000);
         var cts = new CancellationTokenSource();
 
         // Handle both Ctrl+C (SIGINT) and SIGTERM (docker stop / systemd)
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
         AppDomain.CurrentDomain.ProcessExit += (_, _) => cts.Cancel();
 
-        try
+        BrokerServer? server = null;
+        for (int attempt = 1; attempt <= startupRetries && !cts.IsCancellationRequested; attempt++)
         {
-            await server.StartAsync(cts.Token);
+            server = new BrokerServer(
+                port: port,
+                amqpPort: amqpPort,
+                streamPort: streamPort,
+                repo: repo,
+                monitorPort: monitorPort,
+                streamAdvertisedHost: streamAdvertisedHost);
+
+            try
+            {
+                await server.StartAsync(cts.Token);
+                break;
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[CosmoBroker] Failed to start (attempt {attempt}/{startupRetries}): {ex.Message}");
+                await server.DisposeAsync().AsTask().ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                server = null;
+
+                if (attempt == startupRetries)
+                {
+                    Environment.Exit(1);
+                }
+
+                try
+                {
+                    await Task.Delay(startupRetryDelayMs, cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
         }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[CosmoBroker] Failed to start: {ex.Message}");
-            Environment.Exit(1);
-        }
+
+        if (server == null)
+            return;
 
         var natsStatus = port > 0 ? port.ToString() : "disabled";
         var amqpStatus = amqpPort > 0 ? amqpPort.ToString() : "disabled";

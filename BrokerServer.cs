@@ -44,6 +44,7 @@ public class BrokerServer : IAsyncDisposable
     private readonly List<IPEndPoint> _peerEndPoints = new();
     private int _lameDuckModeFlag = 0; // 0 = normal, 1 = lame-duck (Interlocked)
     private bool _lameDuckMode => Volatile.Read(ref _lameDuckModeFlag) == 1;
+    private int _backgroundLoopsStarted = 0;
     public bool LameDuckMode => _lameDuckMode;
     public bool UseSublist { get; set; } = true;
 
@@ -84,9 +85,6 @@ public class BrokerServer : IAsyncDisposable
         _leafnodes = new Services.LeafnodeManager(this, _topicTree);
         _rmqExchanges = new RabbitMQ.ExchangeManager(_repo);
         RabbitMQ = new RabbitMQ.RabbitMQService(_rmqExchanges);
-
-        _jetStream.StartRedeliveryLoop(TimeSpan.FromSeconds(30));
-        _rmqExchanges.StartTtlLoop(TimeSpan.FromSeconds(5));
     }
 
     public void AddPeer(string host, int port)
@@ -129,6 +127,13 @@ public class BrokerServer : IAsyncDisposable
             await _jetStream.InitializeAsync();
             await _rmqExchanges.InitializeAsync(_cts.Token);
         }
+
+        if (Interlocked.CompareExchange(ref _backgroundLoopsStarted, 1, 0) == 0)
+        {
+            _jetStream.StartRedeliveryLoop(TimeSpan.FromSeconds(30));
+            _rmqExchanges.StartTtlLoop(TimeSpan.FromSeconds(5), _cts.Token);
+        }
+
         await _cluster.StartAsync(_cts.Token);
         await _leafnodes.StartAsync(_cts.Token);
         _monitor.Start(_cts.Token);
