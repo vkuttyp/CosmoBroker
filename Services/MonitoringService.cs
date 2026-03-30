@@ -27,6 +27,7 @@ public class MonitoringService
     public void Start(CancellationToken ct)
     {
         _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        _listenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
         _listenSocket.Bind(new IPEndPoint(IPAddress.Any, _port));
         _listenSocket.Listen(10);
 

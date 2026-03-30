@@ -3,9 +3,11 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Text.RegularExpressions;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -14,6 +16,8 @@ using NATS.Client.Core;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
+using RabbitMQ.Stream.Client;
+using RabbitMQ.Stream.Client.Reliable;
 
 namespace CosmoBroker.Benchmarks;
 
@@ -40,6 +44,9 @@ class Program
                 break;
             case BenchMode.CompareAmqp:
                 await RunAmqpComparison(options);
+                break;
+            case BenchMode.Stream:
+                await RunRabbitStreamBench(options);
                 break;
             case BenchMode.CompareAmqpMatrix:
                 await RunAmqpComparisonMatrix(options);
@@ -1101,6 +1108,89 @@ class Program
         var weight = rank - low;
         return sorted[low] * (1 - weight) + sorted[high] * weight;
     }
+
+    static async Task RunRabbitStreamBench(BenchOptions options)
+    {
+        WriteHeader(options, "RabbitMQ Stream (StreamSystem)");
+
+        var systemConfig = new StreamSystemConfig
+        {
+            UserName = "guest",
+            Password = "guest",
+            Endpoints = new List<EndPoint> { ParseEndpoint(options.StreamUrl) }
+        };
+
+        await using var system = await StreamSystem.Create(systemConfig);
+        var streamName = $"bench.stream.{Guid.NewGuid():N}";
+        await system.CreateStream(new StreamSpec(streamName));
+
+        if (options.Publishers <= 0)
+            throw new InvalidOperationException("Stream benchmark requires at least one publisher.");
+
+        var received = 0L;
+        var consumer = await Consumer.Create(new ConsumerConfig(system, streamName)
+        {
+            Reference = $"bench-stream-consumer-{Guid.NewGuid():N}",
+            OffsetSpec = new OffsetTypeFirst(),
+            MessageHandler = (_, _, _, _) =>
+            {
+                Interlocked.Increment(ref received);
+                return Task.CompletedTask;
+            }
+        });
+
+        var payload = CreatePayload(options.PayloadBytes);
+        var sw = Stopwatch.StartNew();
+        var producers = new List<Task>(options.Publishers);
+        var perProducer = options.Count / options.Publishers;
+        var remainder = options.Count % options.Publishers;
+
+        for (int i = 0; i < options.Publishers; i++)
+        {
+            var publisherCount = perProducer + (i < remainder ? 1 : 0);
+            producers.Add(Task.Run(async () =>
+            {
+                var producer = await Producer.Create(new ProducerConfig(system, streamName));
+                try
+                {
+                    for (int j = 0; j < publisherCount; j++)
+                        await producer.Send(new Message(payload));
+                }
+                finally
+                {
+                    await producer.Close();
+                }
+            }));
+        }
+
+        await Task.WhenAll(producers);
+        while (Interlocked.Read(ref received) < options.Count)
+            await Task.Delay(10);
+
+        sw.Stop();
+        var throughput = new ThroughputResult(
+            sw.Elapsed.TotalSeconds,
+            options.Count / sw.Elapsed.TotalSeconds,
+            Interlocked.Read(ref received),
+            0,
+            0);
+
+        PrintThroughput(throughput);
+
+        await consumer.Close();
+        await system.Close();
+    }
+
+    static IPEndPoint ParseEndpoint(string url)
+    {
+        var uri = new Uri(url);
+        var host = uri.Host;
+        var port = uri.Port > 0 ? uri.Port : 5552;
+        var addresses = Dns.GetHostAddresses(host);
+        var address = addresses.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            ?? addresses.First();
+        return new IPEndPoint(address, port);
+    }
 }
 
 enum BenchMode
@@ -1109,6 +1199,7 @@ enum BenchMode
     CosmoClient,
     CosmoRabbitMq,
     RabbitMq,
+    Stream,
     CompareAmqp,
     CompareAmqpMatrix
 }
@@ -1163,6 +1254,7 @@ sealed record BenchOptions
     public string? Mode { get; init; }
     public string? CosmoUrl { get; init; }
     public string? RabbitUrl { get; init; }
+    public string StreamUrl { get; init; } = "amqp://localhost:5552";
     public int Count { get; init; } = 500_000;
     public int PayloadBytes { get; init; } = 256;
     public int Publishers { get; init; } = 1;
@@ -1183,6 +1275,7 @@ sealed record BenchOptions
                 "cosmo" or "cosmo-client" or "cosmobroker" or "cosmobroker-client" => BenchMode.CosmoClient,
                 "cosmo-rmq" or "cosmo-rabbitmq" or "cosmobroker-rmq" => BenchMode.CosmoRabbitMq,
                 "rabbitmq" or "amqp" => BenchMode.RabbitMq,
+                "stream" or "rmq-stream" or "rabbitmq-stream" => BenchMode.Stream,
                 "compare-amqp" or "amqp-compare" or "compare" => BenchMode.CompareAmqp,
                 "compare-amqp-matrix" or "amqp-matrix" or "compare-matrix" => BenchMode.CompareAmqpMatrix,
                 _ => throw new InvalidOperationException($"Unknown benchmark mode '{Mode}'.")
@@ -1220,6 +1313,10 @@ sealed record BenchOptions
                     break;
                 case "--cosmo-url":
                     opts = opts with { CosmoUrl = val };
+                    i++;
+                    break;
+                case "--stream-url":
+                    opts = opts with { StreamUrl = val };
                     i++;
                     break;
                 case "--rabbit-url":

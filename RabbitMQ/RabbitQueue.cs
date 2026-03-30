@@ -843,6 +843,15 @@ public sealed class RabbitQueue
             if (spec?.Kind == RabbitStreamOffsetKind.Offset && spec.Offset.HasValue)
                 return spec.Offset.Value;
 
+            if (spec?.Kind == RabbitStreamOffsetKind.Timestamp && spec.TimestampUtc.HasValue)
+            {
+                var ts = spec.TimestampUtc.Value.UtcDateTime;
+                foreach (var msg in _stream)
+                    if (msg.CreatedAt >= ts)
+                        return msg.StreamOffset;
+                return _streamTailOffset + 1;
+            }
+
             if (_stream.Count == 0)
                 return _streamTailOffset + 1;
 
@@ -962,13 +971,15 @@ public enum RabbitStreamOffsetKind
     Next = 0,
     First = 1,
     Last = 2,
-    Offset = 3
+    Offset = 3,
+    Timestamp = 4
 }
 
 public sealed class RabbitStreamOffsetSpec
 {
     public RabbitStreamOffsetKind Kind { get; set; } = RabbitStreamOffsetKind.Next;
     public long? Offset { get; set; }
+    public DateTimeOffset? TimestampUtc { get; set; }
 }
 
 /// <summary>Arguments bag for queue declaration.</summary>

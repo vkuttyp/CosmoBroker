@@ -1018,7 +1018,24 @@ public class BrokerConnection
 
     public void SendMessage(string subject, string sid, ReadOnlySequence<byte> payload, string? replyTo = null) => SendMessageWithTTL(subject, sid, payload, replyTo, null);
 
-    private byte[] GetCachedBytes(string s) => _stringByteCache.GetOrAdd(s, static str => Encoding.UTF8.GetBytes(str));
+    private const int StringByteCacheMax = 512;
+
+    private byte[] GetCachedBytes(string s)
+    {
+        if (_stringByteCache.TryGetValue(s, out var cached)) return cached;
+        // Evict half the entries when the cache is full to bound per-connection memory use
+        // on connections that publish to many distinct dynamic subjects.
+        if (_stringByteCache.Count >= StringByteCacheMax)
+        {
+            int toRemove = StringByteCacheMax / 2;
+            foreach (var key in _stringByteCache.Keys)
+            {
+                if (--toRemove < 0) break;
+                _stringByteCache.TryRemove(key, out _);
+            }
+        }
+        return _stringByteCache.GetOrAdd(s, static str => Encoding.UTF8.GetBytes(str));
+    }
 
     private void EnqueueBuffer(byte[] buffer, int length, bool pooled)
     {

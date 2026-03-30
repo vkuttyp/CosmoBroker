@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -48,7 +49,7 @@ internal sealed class StreamConnection : IAsyncDisposable
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly ConcurrentDictionary<byte, PublisherState> _publishers = new();
     private readonly ConcurrentDictionary<byte, SubscriptionState> _subscriptions = new();
-    private readonly ConcurrentDictionary<uint, TaskCompletionSource<(ushort Kind, ulong? Value)>> _consumerUpdateRequests = new();
+    private readonly ConcurrentDictionary<uint, TaskCompletionSource<(ushort Kind, long? Value)>> _consumerUpdateRequests = new();
     private static readonly ConcurrentDictionary<string, StreamConnection> LiveConnections = new(StringComparer.Ordinal);
     private readonly string _sessionId = Guid.NewGuid().ToString("N");
     private static readonly uint[] Crc32Table = BuildCrc32Table();
@@ -70,6 +71,10 @@ internal sealed class StreamConnection : IAsyncDisposable
         public bool IsSingleActiveConsumer { get; init; }
         public bool IsActive { get; set; } = true;
         public ushort Credit { get; set; }
+        // Ensures at most one DrainSubscriptionAsync runs per subscription at a time.
+        // WaitAsync(0) (non-blocking) is used so concurrent OnStreamAppended events skip
+        // gracefully — the running drain will pick up any messages already in the queue.
+        public SemaphoreSlim DrainLock { get; } = new SemaphoreSlim(1, 1);
     }
 
     private sealed class PublisherState
@@ -831,7 +836,7 @@ internal sealed class StreamConnection : IAsyncDisposable
         }, ct);
     }
 
-    private long ResolveInitialOffset(string streamName, (ushort Kind, ulong? Value) offsetSpec)
+    private long ResolveInitialOffset(string streamName, (ushort Kind, long? Value) offsetSpec)
     {
         var queue = _manager.GetQueue(_vhost, streamName);
         if (queue == null)
@@ -842,23 +847,24 @@ internal sealed class StreamConnection : IAsyncDisposable
             1 => queue.ResolveRequestedStreamOffset(new RabbitStreamOffsetSpec { Kind = RabbitStreamOffsetKind.First }),
             2 => queue.ResolveRequestedStreamOffset(new RabbitStreamOffsetSpec { Kind = RabbitStreamOffsetKind.Last }),
             3 => queue.ResolveRequestedStreamOffset(new RabbitStreamOffsetSpec { Kind = RabbitStreamOffsetKind.Next }),
-            4 when offsetSpec.Value.HasValue => queue.ResolveRequestedStreamOffset(new RabbitStreamOffsetSpec { Kind = RabbitStreamOffsetKind.Offset, Offset = (long)offsetSpec.Value.Value }),
+            4 when offsetSpec.Value.HasValue => queue.ResolveRequestedStreamOffset(new RabbitStreamOffsetSpec { Kind = RabbitStreamOffsetKind.Offset, Offset = offsetSpec.Value.Value }),
+            5 when offsetSpec.Value.HasValue => queue.ResolveRequestedStreamOffset(new RabbitStreamOffsetSpec { Kind = RabbitStreamOffsetKind.Timestamp, TimestampUtc = DateTimeOffset.FromUnixTimeMilliseconds(offsetSpec.Value.Value) }),
             _ => queue.ResolveRequestedStreamOffset(new RabbitStreamOffsetSpec { Kind = RabbitStreamOffsetKind.Next })
         };
     }
 
-    private static (ushort Kind, ulong? Value) ReadOffsetSpec(ReadOnlySpan<byte> frame, ref int offset)
+    private static (ushort Kind, long? Value) ReadOffsetSpec(ReadOnlySpan<byte> frame, ref int offset)
     {
         var kind = StreamWire.ReadUInt16(frame, ref offset);
-        ulong? value = null;
+        long? value = null;
         if (kind == 4)
-            value = StreamWire.ReadUInt64(frame, ref offset);
+            value = (long)StreamWire.ReadUInt64(frame, ref offset);
         else if (kind == 5)
-            _ = StreamWire.ReadInt64(frame, ref offset);
+            value = StreamWire.ReadInt64(frame, ref offset); // Unix ms timestamp — preserved, was previously discarded
         return (kind, value);
     }
 
-    private async void OnStreamAppended(string vhost, string queue)
+    private void OnStreamAppended(string vhost, string queue)
     {
         if (!string.Equals(vhost, _vhost, StringComparison.Ordinal))
             return;
@@ -868,27 +874,55 @@ internal sealed class StreamConnection : IAsyncDisposable
             .Select(x => x.SubscriptionId)
             .ToArray();
 
-        foreach (var subscriptionId in matching)
+        if (matching.Length == 0) return;
+
+        // Fire-and-forget on a thread-pool thread so the event caller is not blocked,
+        // and exceptions are contained rather than propagating as unobserved (async void).
+        _ = Task.Run(async () =>
         {
-            try { await DrainSubscriptionAsync(subscriptionId, CancellationToken.None); } catch { }
-        }
+            foreach (var subscriptionId in matching)
+            {
+                try { await DrainSubscriptionAsync(subscriptionId, CancellationToken.None, tryOnly: true); }
+                catch { }
+            }
+        });
     }
 
-    private async Task DrainSubscriptionAsync(byte subscriptionId, CancellationToken ct)
+    private async Task DrainSubscriptionAsync(byte subscriptionId, CancellationToken ct, bool tryOnly = false)
     {
         if (!_subscriptions.TryGetValue(subscriptionId, out var subscription))
             return;
         if (subscription.IsSingleActiveConsumer && !subscription.IsActive)
             return;
 
-        var queue = _manager.GetQueue(_vhost, subscription.Stream);
-        if (queue == null)
-            return;
-
-        while (subscription.Credit > 0 && queue.TryGetStreamMessage(subscription.ConsumerTag, out var message) && message != null)
+        // tryOnly=true (from OnStreamAppended): skip if a drain is already running — the
+        // active drain will exhaust the queue since the message was enqueued before the event.
+        // tryOnly=false (direct callers like credit/subscribe): wait for the lock so the caller
+        // is guaranteed messages are delivered before returning.
+        if (tryOnly)
         {
-            subscription.Credit--;
-            await SendDeliverAsync(subscriptionId, message, ct);
+            if (!await subscription.DrainLock.WaitAsync(0, ct))
+                return;
+        }
+        else
+        {
+            await subscription.DrainLock.WaitAsync(ct);
+        }
+
+        try
+        {
+            var queue = _manager.GetQueue(_vhost, subscription.Stream);
+            if (queue == null) return;
+
+            while (subscription.Credit > 0 && queue.TryGetStreamMessage(subscription.ConsumerTag, out var message) && message != null)
+            {
+                subscription.Credit--;
+                await SendDeliverAsync(subscriptionId, message, ct);
+            }
+        }
+        finally
+        {
+            subscription.DrainLock.Release();
         }
     }
 
@@ -904,7 +938,7 @@ internal sealed class StreamConnection : IAsyncDisposable
     private async Task SendConsumerUpdateQueryAsync(SubscriptionState subscription, bool isActive, CancellationToken ct)
     {
         var correlationId = (uint)Interlocked.Increment(ref _nextConsumerUpdateCorrelationId);
-        var pending = new TaskCompletionSource<(ushort Kind, ulong? Value)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource<(ushort Kind, long? Value)>(TaskCreationOptions.RunContinuationsAsynchronously);
         _consumerUpdateRequests[correlationId] = pending;
 
         await SendFrameAsync(ConsumerUpdateKey, writer =>
@@ -914,7 +948,7 @@ internal sealed class StreamConnection : IAsyncDisposable
             StreamWire.WriteByte(writer.Buffer, ref writer.Offset, isActive ? (byte)1 : (byte)0);
         }, ct);
 
-        (ushort Kind, ulong? Value) update;
+        (ushort Kind, long? Value) update;
         try
         {
             update = await pending.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
@@ -981,11 +1015,21 @@ internal sealed class StreamConnection : IAsyncDisposable
     private async Task SendDeliverAsync(byte subscriptionId, RabbitMessage message, CancellationToken ct)
     {
         var payload = message.Payload;
-        var chunkData = new byte[4 + payload.Length];
-        var chunkDataOffset = 0;
-        StreamWire.WriteUInt32(chunkData, ref chunkDataOffset, (uint)payload.Length);
-        payload.CopyTo(chunkData.AsSpan(chunkDataOffset));
-        var crc = ComputeCrc32(chunkData);
+        int chunkDataSize = 4 + payload.Length;
+        var chunkData = ArrayPool<byte>.Shared.Rent(chunkDataSize);
+        uint crc;
+        try
+        {
+            var chunkDataOffset = 0;
+            StreamWire.WriteUInt32(chunkData, ref chunkDataOffset, (uint)payload.Length);
+            payload.CopyTo(chunkData.AsSpan(chunkDataOffset));
+            crc = ComputeCrc32(chunkData.AsSpan(0, chunkDataSize));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(chunkData);
+        }
+
         var chunkLength = 1 + 1 + 2 + 4 + 8 + 8 + 8 + 4 + 4 + 4 + 4 + payload.Length;
         await SendFrameAsync(DeliverKey, writer =>
         {
@@ -1012,20 +1056,28 @@ internal sealed class StreamConnection : IAsyncDisposable
 
     private async Task SendFrameAsync(ushort key, Action<FrameBuilder> write, CancellationToken ct, int payloadSizeHint = 256)
     {
-        var buffer = new byte[Math.Max(payloadSizeHint + 32, 64)];
-        var writer = new FrameBuilder(buffer);
-        StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, key);
-        StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, StreamWire.Version1);
-        write(writer);
-
-        await _writeLock.WaitAsync(ct);
+        int bufferSize = Math.Max(payloadSizeHint + 32, 64);
+        var buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
         try
         {
-            await StreamWire.WriteFrameAsync(_stream, writer.Buffer[..writer.Offset], ct);
+            var writer = new FrameBuilder(buffer);
+            StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, key);
+            StreamWire.WriteUInt16(writer.Buffer, ref writer.Offset, StreamWire.Version1);
+            write(writer);
+
+            await _writeLock.WaitAsync(ct);
+            try
+            {
+                await StreamWire.WriteFrameAsync(_stream, writer.Buffer[..writer.Offset], ct);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
         }
         finally
         {
-            _writeLock.Release();
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 

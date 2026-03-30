@@ -38,6 +38,8 @@ HTTP API routes:
 - `/api/rabbitmq/super-streams/route?vhost=/&exchange=<exchange>&routing_key=<key>&partition_key=<optional>`
 - `/api/rabbitmq/streams/reset-offset`
 - `/api/rabbitmq/super-streams/reset-offset`
+- `/api/rabbitmq/streams/retention`
+- `/api/rabbitmq/super-streams/retention`
 
 ## Start The Broker
 
@@ -118,6 +120,7 @@ The management layer now includes a first operational stream control:
 
 - reset a RabbitMQ-style stream consumer offset
 - reset a RabbitMQ-style super-stream consumer offset across all partitions
+- update retention limits for stream queues and super streams directly from the UI or JSON API
 
 JSON API example:
 
@@ -166,6 +169,15 @@ curl -u admin:change-me \
 ```
 
 That returns the partition queue the message would land on. If `partition_key` is provided, it overrides the routing-key hash for super-stream partition selection.
+
+## Retention Tuning
+
+The RabbitMQ view now exposes HTML forms and JSON API endpoints to adjust stream retention limits without restarting the broker.
+
+- `POST /api/rabbitmq/streams/retention` accepts `vhost`, `queue`, and optional `max_length_messages`, `max_length_bytes`, `max_age_ms`.
+- `POST /api/rabbitmq/super-streams/retention` accepts `vhost`, `exchange`, and the same retention fields and applies them to every partition of the super stream.
+
+The target stream metrics table updates in real time through the next monitor scrape. Use the HTML forms when you want to try values interactively, or call the JSON APIs from scripts or automation.
 
 ## Operational Notes
 

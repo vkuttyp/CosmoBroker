@@ -121,6 +121,74 @@ else
         </form>
     </section>
 
+    <section class="panel">
+        <div class="panel-head">
+            <h2>Update Stream Retention</h2>
+        </div>
+        <form method="post" action="/rabbitmq/streams/retention" class="stream-reset-form">
+            <div class="row g-2">
+                <div class="col-md-2">
+                    <label class="form-label" for="retention-vhost">Vhost</label>
+                    <input id="retention-vhost" class="form-control" type="text" name="retention-vhost" value="/" />
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label" for="retention-queue">Queue</label>
+                    <input id="retention-queue" class="form-control" type="text" name="retention-queue" placeholder="stream queue" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="retention-max-messages">Max Messages</label>
+                    <input id="retention-max-messages" class="form-control" type="number" name="retention-max-messages" min="0" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="retention-max-bytes">Max Bytes</label>
+                    <input id="retention-max-bytes" class="form-control" type="number" name="retention-max-bytes" min="0" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="retention-max-age-ms">Max Age (ms)</label>
+                    <input id="retention-max-age-ms" class="form-control" type="number" name="retention-max-age-ms" min="0" />
+                </div>
+                <div class="col-md-1 d-flex align-items-end">
+                    <button type="submit" class="btn btn-secondary w-100">Update</button>
+                </div>
+            </div>
+            <div class="form-text">Leave fields empty to remove that retention limit.</div>
+        </form>
+    </section>
+
+    <section class="panel">
+        <div class="panel-head">
+            <h2>Update Super Stream Retention</h2>
+        </div>
+        <form method="post" action="/rabbitmq/super-streams/retention" class="stream-reset-form">
+            <div class="row g-2">
+                <div class="col-md-2">
+                    <label class="form-label" for="super-retention-vhost">Vhost</label>
+                    <input id="super-retention-vhost" class="form-control" type="text" name="super-retention-vhost" value="@(selectedSuperStream?.vhost ?? "/")" />
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label" for="super-retention-exchange">Exchange</label>
+                    <input id="super-retention-exchange" class="form-control" type="text" name="super-retention-exchange" value="@(selectedSuperStream?.name ?? string.Empty)" placeholder="super stream exchange" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="super-retention-max-messages">Max Messages</label>
+                    <input id="super-retention-max-messages" class="form-control" type="number" name="super-retention-max-messages" min="0" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="super-retention-max-bytes">Max Bytes</label>
+                    <input id="super-retention-max-bytes" class="form-control" type="number" name="super-retention-max-bytes" min="0" />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="super-retention-max-age-ms">Max Age (ms)</label>
+                    <input id="super-retention-max-age-ms" class="form-control" type="number" name="super-retention-max-age-ms" min="0" />
+                </div>
+                <div class="col-md-1 d-flex align-items-end">
+                    <button type="submit" class="btn btn-secondary w-100">Update</button>
+                </div>
+            </div>
+            <div class="form-text">Applies the limits to every partition of the selected super stream.</div>
+        </form>
+    </section>
+
     <div class="panel-grid">
         @if (selectedSuperStream != null)
         {

@@ -12,7 +12,7 @@ public class TopicTree
     {
         // Individual subscribers: SID -> Connection Set
         public ConcurrentDictionary<string, ConcurrentDictionary<BrokerConnection, byte>> Subscribers { get; } = new();
-        
+
         // Queue Groups: GroupName -> { SID -> Connection Set }
         public ConcurrentDictionary<string, ConcurrentDictionary<string, ConcurrentDictionary<BrokerConnection, byte>>> QueueGroups { get; } = new();
 
@@ -39,7 +39,10 @@ public class TopicTree
         int start = 0;
         int dotIdx;
 
-        ReadOnlySpan<byte> subjectBytes = System.Text.Encoding.UTF8.GetBytes(subject);
+        // stackalloc avoids heap allocation for the UTF-8 encoding (matches Publish path).
+        Span<byte> subjectBuf = stackalloc byte[subject.Length * 3];
+        int subjectLen = System.Text.Encoding.UTF8.GetBytes(subject, subjectBuf);
+        ReadOnlySpan<byte> subjectBytes = subjectBuf.Slice(0, subjectLen);
 
         while ((dotIdx = subjectBytes.Slice(start).IndexOf((byte)'.')) != -1)
         {
@@ -85,18 +88,32 @@ public class TopicTree
 
     public void Unsubscribe(string subject, BrokerConnection connection, string sid, string? queueGroup = null)
     {
+        // stackalloc avoids heap allocation for the UTF-8 encoding.
+        Span<byte> subjectBuf = stackalloc byte[subject.Length * 3];
+        int subjectLen = System.Text.Encoding.UTF8.GetBytes(subject, subjectBuf);
+        ReadOnlySpan<byte> subjectBytes = subjectBuf.Slice(0, subjectLen);
+
+        // Track path so we can prune empty nodes bottom-up after unsubscribing.
+        var path = new List<(TopicNode Parent, byte[] Key, TopicNode Child)>(4);
+
         var current = _root;
         int start = 0;
         int dotIdx;
-        ReadOnlySpan<byte> subjectBytes = System.Text.Encoding.UTF8.GetBytes(subject);
 
         while ((dotIdx = subjectBytes.Slice(start).IndexOf((byte)'.')) != -1)
         {
             var part = subjectBytes.Slice(start, dotIdx);
-            if (!TryGetChild(current, part, out current!)) return;
+            if (!TryGetChild(current, part, out var next)) return;
+            path.Add((current, part.ToArray(), next!));
+            current = next!;
             start += dotIdx + 1;
         }
-        if (!TryGetChild(current, subjectBytes.Slice(start), out current!)) return;
+        {
+            var lastPart = subjectBytes.Slice(start);
+            if (!TryGetChild(current, lastPart, out var leaf)) return;
+            path.Add((current, lastPart.ToArray(), leaf!));
+            current = leaf!;
+        }
 
         if (string.IsNullOrEmpty(queueGroup))
         {
@@ -117,6 +134,28 @@ public class TopicTree
                 }
                 if (group.IsEmpty) current.QueueGroups.TryRemove(queueGroup, out _);
             }
+        }
+
+        // Prune empty nodes from leaf toward root. Stop as soon as a non-empty node is found
+        // since its ancestors must also be non-empty (they have at least this child).
+        for (int i = path.Count - 1; i >= 0; i--)
+        {
+            var (parent, key, child) = path[i];
+            if (!child.Subscribers.IsEmpty || !child.QueueGroups.IsEmpty || child.Children.Count != 0)
+                break;
+
+            parent.ChildrenLock.EnterWriteLock();
+            try
+            {
+                // Re-check under write lock: another thread may have subscribed to this node
+                // between our check above and acquiring the lock.
+                if (child.Subscribers.IsEmpty && child.QueueGroups.IsEmpty && child.Children.Count == 0)
+                {
+                    parent.Children.Remove(key);
+                    child.Dispose();
+                }
+            }
+            finally { parent.ChildrenLock.ExitWriteLock(); }
         }
     }
 
@@ -153,49 +192,60 @@ public class TopicTree
 
     private bool MatchAndPublish(TopicNode node, ReadOnlySpan<byte> fullSubject, ReadOnlySpan<byte> remaining, string? originalSubject, System.Buffers.ReadOnlySequence<byte> payload, string? replyTo = null, TimeSpan? ttl = null, BrokerConnection? source = null)
     {
-        bool accepted = true;
+        // Collect matching child node references under the read lock, then deliver outside it.
+        // Holding the lock during Send calls (which can block on backpressure) would stall all
+        // concurrent subscribe/unsubscribe and publish operations at this tree level.
+        TopicNode? chevronNode = null;
+        TopicNode? literalNode = null;
+        TopicNode? starNode = null;
+        TopicNode? nextLiteral = null;
+        TopicNode? nextStar = null;
+        bool isLeafLevel;
+        ReadOnlySpan<byte> nextRemaining = default;
+
         var lookup = node.Children.GetAlternateLookup<ReadOnlySpan<byte>>();
         node.ChildrenLock.EnterReadLock();
         try
         {
-            if (lookup.TryGetValue(WildcardChevron, out var chevronNode))
-            {
-                if (!DeliverToNode(chevronNode, originalSubject, fullSubject, payload, replyTo, ttl, source))
-                    accepted = false;
-            }
+            lookup.TryGetValue(WildcardChevron, out chevronNode);
 
             int dotIdx = remaining.IndexOf((byte)'.');
-            if (dotIdx == -1)
+            isLeafLevel = dotIdx == -1;
+            if (isLeafLevel)
             {
-                if (lookup.TryGetValue(remaining, out var literalNode))
-                {
-                    if (!DeliverToNode(literalNode, originalSubject, fullSubject, payload, replyTo, ttl, source))
-                        accepted = false;
-                }
-                if (lookup.TryGetValue(WildcardStar, out var starNode))
-                {
-                    if (!DeliverToNode(starNode, originalSubject, fullSubject, payload, replyTo, ttl, source))
-                        accepted = false;
-                }
-                return accepted;
+                lookup.TryGetValue(remaining, out literalNode);
+                lookup.TryGetValue(WildcardStar, out starNode);
             }
-
-            var part = remaining.Slice(0, dotIdx);
-            var nextRemaining = remaining.Slice(dotIdx + 1);
-
-            if (lookup.TryGetValue(part, out var nextLiteral))
+            else
             {
-                if (!MatchAndPublish(nextLiteral, fullSubject, nextRemaining, originalSubject, payload, replyTo, ttl, source))
-                    accepted = false;
-            }
-
-            if (lookup.TryGetValue(WildcardStar, out var nextStar))
-            {
-                if (!MatchAndPublish(nextStar, fullSubject, nextRemaining, originalSubject, payload, replyTo, ttl, source))
-                    accepted = false;
+                var part = remaining.Slice(0, dotIdx);
+                nextRemaining = remaining.Slice(dotIdx + 1);
+                lookup.TryGetValue(part, out nextLiteral);
+                lookup.TryGetValue(WildcardStar, out nextStar);
             }
         }
         finally { node.ChildrenLock.ExitReadLock(); }
+
+        // Deliver / recurse outside the lock.
+        bool accepted = true;
+
+        if (chevronNode != null && !DeliverToNode(chevronNode, originalSubject, fullSubject, payload, replyTo, ttl, source))
+            accepted = false;
+
+        if (isLeafLevel)
+        {
+            if (literalNode != null && !DeliverToNode(literalNode, originalSubject, fullSubject, payload, replyTo, ttl, source))
+                accepted = false;
+            if (starNode != null && !DeliverToNode(starNode, originalSubject, fullSubject, payload, replyTo, ttl, source))
+                accepted = false;
+            return accepted;
+        }
+
+        if (nextLiteral != null && !MatchAndPublish(nextLiteral, fullSubject, nextRemaining, originalSubject, payload, replyTo, ttl, source))
+            accepted = false;
+        if (nextStar != null && !MatchAndPublish(nextStar, fullSubject, nextRemaining, originalSubject, payload, replyTo, ttl, source))
+            accepted = false;
+
         return accepted;
     }
 
@@ -212,13 +262,13 @@ public class TopicTree
                 {
                     if (conn == source && source?.NoEcho == true) continue;
                     if (source != null && (source.IsRoute || source.IsLeaf) && (conn.IsRoute || conn.IsLeaf)) continue;
-                    
+
                     bool res;
                     if (resolvedSubject != null)
                         res = conn.SendMessageWithTTL(resolvedSubject, sub.Key, payload, replyTo, ttl);
                     else
                         res = conn.SendMessageWithTTL(fullSubject, sub.Key, payload, replyTo, ttl);
-                    
+
                     if (!res) accepted = false;
                 }
             }
@@ -293,7 +343,7 @@ public class TopicTree
                         res = pick.Conn.SendMessageWithTTL(resolvedSubject, pick.Sid, payload, replyTo, ttl);
                     else
                         res = pick.Conn.SendMessageWithTTL(fullSubject, pick.Sid, payload, replyTo, ttl);
-                    
+
                     if (!res) accepted = false;
                 }
             }
@@ -306,7 +356,10 @@ public class TopicTree
         var current = _root;
         int start = 0;
         int dotIdx;
-        ReadOnlySpan<byte> subjectBytes = System.Text.Encoding.UTF8.GetBytes(subject);
+
+        Span<byte> subjectBuf = stackalloc byte[subject.Length * 3];
+        int subjectLen = System.Text.Encoding.UTF8.GetBytes(subject, subjectBuf);
+        ReadOnlySpan<byte> subjectBytes = subjectBuf.Slice(0, subjectLen);
 
         while ((dotIdx = subjectBytes.Slice(start).IndexOf((byte)'.')) != -1)
         {
@@ -315,7 +368,7 @@ public class TopicTree
             start += dotIdx + 1;
         }
         if (!TryGetChild(current, subjectBytes.Slice(start), out current!)) return false;
-        
+
         return current.Subscribers.Count > 0 || current.QueueGroups.Count > 0;
     }
 }

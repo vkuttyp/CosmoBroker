@@ -135,6 +135,7 @@ public class BrokerServer : IAsyncDisposable
         if (_port > 0)
         {
             _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            _listenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             _listenSocket.ReceiveBufferSize = 8 * 1024 * 1024; // 8MB buffer
             _listenSocket.SendBufferSize = 8 * 1024 * 1024;    // 8MB buffer
             _listenSocket.Bind(new IPEndPoint(IPAddress.Any, _port));
@@ -151,6 +152,7 @@ public class BrokerServer : IAsyncDisposable
         if (_amqpPort > 0)
         {
             _amqpListenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            _amqpListenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             _amqpListenSocket.ReceiveBufferSize = 4 * 1024 * 1024;
             _amqpListenSocket.SendBufferSize = 4 * 1024 * 1024;
             _amqpListenSocket.Bind(new IPEndPoint(IPAddress.Any, _amqpPort));
@@ -166,6 +168,7 @@ public class BrokerServer : IAsyncDisposable
         if (_streamPort > 0)
         {
             _streamListenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            _streamListenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             _streamListenSocket.ReceiveBufferSize = 4 * 1024 * 1024;
             _streamListenSocket.SendBufferSize = 4 * 1024 * 1024;
             _streamListenSocket.Bind(new IPEndPoint(IPAddress.Any, _streamPort));

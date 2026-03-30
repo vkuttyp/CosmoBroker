@@ -1,0 +1,67 @@
+version: "3.9"
+
+services:
+  cosmobroker:
+    image: vkuttyp/cosmobroker-server:latest
+    container_name: act-cosmobroker
+    ports:
+      - 4222:4222
+      - 8222:8222
+      - 5672:5672
+      - 5552:5552
+    environment:
+      COSMOBROKER_ENABLE_NATS: "true"
+      COSMOBROKER_ENABLE_AMQP: "true"
+      COSMOBROKER_ENABLE_RMQ_STREAM: "true"
+      COSMOBROKER_MONITOR_PORT: 8222
+      COSMOBROKER_STREAM_PORT: 5552
+      COSMOBROKER_AMQP_PORT: 5672
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'curl -f http://localhost:8222/varz || exit 1'" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: act-rabbitmq
+    ports:
+      - 5672:5672
+      - 15672:15672
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'rabbitmq-diagnostics -q ping'" ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+
+  management:
+    image: vkuttyp/cosmobroker-management:latest
+    container_name: act-management
+    depends_on:
+      - cosmobroker
+    ports:
+      - 9091:9091
+    environment:
+      COSMOBROKER_MONITOR_URL: http://cosmobroker:8222
+      COSMOBROKER_MANAGEMENT_PORT: 9091
+      COSMOBROKER_MANAGEMENT_USERNAME: act
+      COSMOBROKER_MANAGEMENT_PASSWORD: act
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'curl -f http://localhost:9091/api/health || exit 1'" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  act-runner:
+    image: ghcr.io/catthehacker/ubuntu:act-20.04
+    platform: linux/amd64
+    container_name: act-runner
+    working_dir: /github/workspace
+    volumes:
+      - .:/github/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["/bin/sh", "-c", "while sleep 3600; do :; done"]
+
+networks:
+  default:
+    driver: bridge

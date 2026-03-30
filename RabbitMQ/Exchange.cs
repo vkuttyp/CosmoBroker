@@ -20,13 +20,16 @@ public sealed class Exchange
     public bool AutoDelete { get; }
     public int? SuperStreamPartitions { get; }
 
-    // Binding table: routing key → list of bound queues
-    // For fanout, all queues are stored under the "" key.
-    // For headers, the routing key is unused; we store under "" and filter by args.
-    private readonly ConcurrentDictionary<string, ConcurrentBag<string>> _bindings = new(StringComparer.OrdinalIgnoreCase);
+    // Binding table: routing key → set of bound queues (byte value unused).
+    // ConcurrentDictionary<string,byte> gives atomic TryAdd/TryRemove, eliminating the
+    // TOCTOU race that ConcurrentBag.Contains+Add had, and the rebuild-swap race in Unbind.
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _bindings = new(StringComparer.OrdinalIgnoreCase);
 
-    // Headers exchange: binding key → required header pairs
+    // Headers exchange: queue name → required header pairs
     private readonly ConcurrentDictionary<string, Dictionary<string, string>> _headerArgs = new();
+
+    // Topic exchange: cache pattern.Split('.') result per pattern to avoid per-publish allocations.
+    private readonly ConcurrentDictionary<string, string[]> _topicPatternCache = new(StringComparer.OrdinalIgnoreCase);
 
     public Exchange(string name, ExchangeType type, bool durable = true, bool autoDelete = false, int? superStreamPartitions = null)
         : this("/", name, type, durable, autoDelete, superStreamPartitions)
@@ -48,24 +51,31 @@ public sealed class Exchange
     public void Bind(string queueName, string routingKey, Dictionary<string, string>? headerArgs = null)
     {
         string key = NormaliseKey(routingKey);
-        var bag = _bindings.GetOrAdd(key, _ => new ConcurrentBag<string>());
-        if (!bag.Contains(queueName))
-            bag.Add(queueName);
+        var set = _bindings.GetOrAdd(key, _ => new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase));
+        // TryAdd is atomic — no TOCTOU between existence check and insert.
+        set.TryAdd(queueName, 0);
 
         if (Type == ExchangeType.Headers && headerArgs != null)
             _headerArgs[queueName] = headerArgs;
+
+        // Pre-cache the split pattern for topic exchanges so RouteTopic pays no per-publish alloc.
+        if (Type == ExchangeType.Topic)
+            _topicPatternCache.TryAdd(key, key.Split('.'));
     }
 
     public bool Unbind(string queueName, string routingKey)
     {
         string key = NormaliseKey(routingKey);
         bool removed = false;
-        if (_bindings.TryGetValue(key, out var bag))
+        if (_bindings.TryGetValue(key, out var set))
         {
-            // ConcurrentBag doesn't support remove; rebuild without the queue.
-            var remaining = bag.Where(q => q != queueName).ToArray();
-            removed = remaining.Length != bag.Count;
-            _bindings[key] = new ConcurrentBag<string>(remaining);
+            // TryRemove is atomic — no rebuild-swap race between concurrent unbinds.
+            removed = set.TryRemove(queueName, out _);
+            if (set.IsEmpty)
+            {
+                _bindings.TryRemove(key, out _);
+                _topicPatternCache.TryRemove(key, out _);
+            }
         }
         _headerArgs.TryRemove(queueName, out _);
         return removed;
@@ -89,23 +99,28 @@ public sealed class Exchange
 
     private IEnumerable<string> RouteDirect(string routingKey)
     {
-        if (_bindings.TryGetValue(routingKey, out var bag))
-            foreach (var q in bag) yield return q;
+        if (_bindings.TryGetValue(routingKey, out var set))
+            foreach (var q in set.Keys) yield return q;
     }
 
     private IEnumerable<string> RouteFanout()
     {
-        foreach (var bag in _bindings.Values)
-            foreach (var q in bag)
+        foreach (var set in _bindings.Values)
+            foreach (var q in set.Keys)
                 yield return q;
     }
 
     private IEnumerable<string> RouteTopic(string routingKey)
     {
-        foreach (var (pattern, bag) in _bindings)
-            if (TopicMatches(pattern, routingKey))
-                foreach (var q in bag)
+        var rParts = routingKey.Split('.');
+        foreach (var (pattern, set) in _bindings)
+        {
+            // Use cached split — avoids per-publish heap allocation of pattern parts.
+            var pParts = _topicPatternCache.GetOrAdd(pattern, static p => p.Split('.'));
+            if (MatchParts(pParts, 0, rParts, 0))
+                foreach (var q in set.Keys)
                     yield return q;
+        }
     }
 
     private IEnumerable<string> RouteHeaders(Dictionary<string, string>? headers)
@@ -178,8 +193,8 @@ public sealed class Exchange
     public IReadOnlyDictionary<string, IReadOnlyList<string>> GetBindings()
     {
         var result = new Dictionary<string, IReadOnlyList<string>>();
-        foreach (var (k, bag) in _bindings)
-            result[k] = bag.ToList().AsReadOnly();
+        foreach (var (k, set) in _bindings)
+            result[k] = set.Keys.ToList().AsReadOnly();
         return result;
     }
 
@@ -189,7 +204,7 @@ public sealed class Exchange
             return Array.Empty<string>();
 
         return _bindings.Values
-            .SelectMany(static bag => bag)
+            .SelectMany(static set => set.Keys)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(static x => x, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -209,5 +224,5 @@ public sealed class Exchange
     }
 
     public bool HasBindings()
-        => _bindings.Values.Any(bag => bag.Count > 0);
+        => _bindings.Values.Any(set => !set.IsEmpty);
 }
