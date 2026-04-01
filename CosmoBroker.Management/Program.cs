@@ -15,6 +15,12 @@ string monitorBaseUrl = Environment.GetEnvironmentVariable("COSMOBROKER_MONITOR_
     ?? "http://127.0.0.1:8222";
 string managementUsername = Environment.GetEnvironmentVariable("COSMOBROKER_MANAGEMENT_USERNAME") ?? string.Empty;
 string managementPassword = Environment.GetEnvironmentVariable("COSMOBROKER_MANAGEMENT_PASSWORD") ?? string.Empty;
+string managementCertificatePath = Environment.GetEnvironmentVariable("COSMOBROKER_MANAGEMENT_CERT_PATH") ?? string.Empty;
+string managementCertificatePassword = Environment.GetEnvironmentVariable("COSMOBROKER_MANAGEMENT_CERT_PASSWORD") ?? string.Empty;
+bool enableHttp3 = string.Equals(
+    Environment.GetEnvironmentVariable("COSMOBROKER_MANAGEMENT_ENABLE_HTTP3"),
+    "true",
+    StringComparison.OrdinalIgnoreCase);
 bool allowAnonymousHealth = !string.Equals(
     Environment.GetEnvironmentVariable("COSMOBROKER_MANAGEMENT_ALLOW_ANONYMOUS_HEALTH"),
     "false",
@@ -25,6 +31,12 @@ if (!Directory.Exists(staticRoot))
     staticRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../wwwroot"));
 
 builder.ListenOn(managementPort);
+if (!string.IsNullOrWhiteSpace(managementCertificatePath))
+{
+    builder.UseHttps(managementCertificatePath, managementCertificatePassword);
+    if (enableHttp3)
+        builder.UseHttp3();
+}
 builder.UseExceptionHandler();
 
 builder.Services.AddSingleton(new BrokerManagementOptions

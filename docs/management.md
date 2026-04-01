@@ -93,6 +93,9 @@ That helper opens live NATS and RabbitMQ connections, creates a JetStream stream
 | `COSMOBROKER_MANAGEMENT_USERNAME` | Enables HTTP Basic auth when set with a password |
 | `COSMOBROKER_MANAGEMENT_PASSWORD` | Enables HTTP Basic auth when set with a username |
 | `COSMOBROKER_MANAGEMENT_ALLOW_ANONYMOUS_HEALTH` | When `false`, `/api/health` also requires auth |
+| `COSMOBROKER_MANAGEMENT_CERT_PATH` | Optional PFX certificate path to enable HTTPS on the management host |
+| `COSMOBROKER_MANAGEMENT_CERT_PASSWORD` | Optional PFX certificate password |
+| `COSMOBROKER_MANAGEMENT_ENABLE_HTTP3` | When `true`, enables experimental HTTP/3 over QUIC on the HTTPS listener |
 
 ## Basic Authentication
 
@@ -113,6 +116,26 @@ Behavior:
 - when username and password are both set, all routes require Basic auth
 - `/api/health` remains anonymous by default so container healthchecks keep working
 - set `COSMOBROKER_MANAGEMENT_ALLOW_ANONYMOUS_HEALTH=false` if you want health to be protected too
+
+## HTTPS And HTTP/3
+
+The management host can now terminate TLS itself, and can optionally enable experimental HTTP/3.
+
+Example:
+
+```bash
+COSMOBROKER_MONITOR_URL=http://127.0.0.1:8222 \
+COSMOBROKER_MANAGEMENT_PORT=9091 \
+COSMOBROKER_MANAGEMENT_CERT_PATH=/app/certs/management.pfx \
+COSMOBROKER_MANAGEMENT_CERT_PASSWORD=change-me \
+COSMOBROKER_MANAGEMENT_ENABLE_HTTP3=true \
+dotnet run --project CosmoBroker.Management/CosmoBroker.Management.csproj
+```
+
+Notes:
+
+- HTTP/3 requires HTTPS. If no certificate path is configured, the management host stays on HTTP/1.1 and HTTP/2 only.
+- For most deployments this is a convenience feature, not a major performance lever. The management UI is a lower-throughput control plane compared to the broker itself.
 
 ## Stream Operations
 
