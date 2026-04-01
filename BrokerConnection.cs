@@ -698,38 +698,51 @@ public class BrokerConnection
                 var result = await reader.ReadAsync();
                 var buffer = result.Buffer;
                 if (buffer.IsEmpty && result.IsCompleted) break;
+                var remaining = buffer;
 
                 try
                 {
-                    if (socket != null)
+                    while (!remaining.IsEmpty)
                     {
-                        if (buffer.IsSingleSegment)
+                        int bytesSent;
+
+                        if (socket != null)
                         {
-                            await socket.SendAsync(buffer.First, SocketFlags.None);
+                            if (remaining.IsSingleSegment)
+                            {
+                                bytesSent = await socket.SendAsync(remaining.First, SocketFlags.None);
+                            }
+                            else
+                            {
+                                // Scatter-gather: one syscall for all currently buffered segments.
+                                _sendSegments.Clear();
+                                foreach (var mem in remaining)
+                                {
+                                    if (System.Runtime.InteropServices.MemoryMarshal.TryGetArray(mem, out var seg))
+                                        _sendSegments.Add(seg);
+                                }
+
+                                bytesSent = await socket.SendAsync(_sendSegments, SocketFlags.None);
+                            }
                         }
                         else
                         {
-                            // Scatter-gather: one syscall for all segments.
-                            _sendSegments.Clear();
-                            foreach (var mem in buffer)
-                            {
-                                if (System.Runtime.InteropServices.MemoryMarshal.TryGetArray(mem, out var seg))
-                                    _sendSegments.Add(seg);
-                            }
-                            socket.Send(_sendSegments, SocketFlags.None);
+                            foreach (var memory in remaining)
+                                await stream.WriteAsync(memory);
+                            await stream.FlushAsync();
+                            bytesSent = (int)remaining.Length;
                         }
+
+                        if (bytesSent <= 0)
+                            throw new IOException("Socket closed during send.");
+
+                        remaining = remaining.Slice(bytesSent);
+                        Interlocked.Add(ref _pendingBytes, -bytesSent);
                     }
-                    else
-                    {
-                        foreach (var memory in buffer)
-                            await stream.WriteAsync(memory);
-                        await stream.FlushAsync();
-                    }
-                    Interlocked.Add(ref _pendingBytes, -(long)buffer.Length);
                 }
                 finally
                 {
-                    reader.AdvanceTo(buffer.End);
+                    reader.AdvanceTo(remaining.Start, buffer.End);
                 }
             }
         }

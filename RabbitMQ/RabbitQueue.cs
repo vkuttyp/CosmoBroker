@@ -12,6 +12,9 @@ namespace CosmoBroker.RabbitMQ;
 /// </summary>
 public sealed class RabbitQueue
 {
+    private static readonly int InitialRetryDelayMs = ResolveRetryDelayMilliseconds("COSMOBROKER_RMQ_RETRY_DELAY_MS", 10);
+    private static readonly int MaxRetryDelayMs = ResolveRetryDelayMilliseconds("COSMOBROKER_RMQ_RETRY_MAX_DELAY_MS", 250);
+
     // --- Configuration -------------------------------------------------------
 
     public string Vhost { get; }
@@ -49,6 +52,7 @@ public sealed class RabbitQueue
     private readonly object _dequeueLock = new();
     private int _retryScheduled;
     private int _drainActive;
+    private int _retryDelayMs = InitialRetryDelayMs;
     private long _streamTailOffset;
     private long _streamBytes;
 
@@ -468,6 +472,7 @@ public sealed class RabbitQueue
                         }
 
                         deliveredAny = true;
+                        ResetRetryBackoff();
 
                         if (registration.AutoAck)
                         {
@@ -496,6 +501,9 @@ public sealed class RabbitQueue
         {
             Interlocked.Exchange(ref _drainActive, 0);
         }
+
+        if (!HasQueuedMessages())
+            ResetRetryBackoff();
 
         if (!Consumers.IsEmpty && HasQueuedMessages())
             ScheduleRetry();
@@ -554,6 +562,7 @@ public sealed class RabbitQueue
 
                         _nextOffsetByConsumer[tag] = msg.StreamOffset + 1;
                         deliveredAny = true;
+                        ResetRetryBackoff();
                     }
                 }
 
@@ -565,6 +574,9 @@ public sealed class RabbitQueue
         {
             Interlocked.Exchange(ref _drainActive, 0);
         }
+
+        if (!HasQueuedMessages())
+            ResetRetryBackoff();
     }
 
     // Trigger dispatch externally (e.g. after ack frees a prefetch slot)
@@ -688,11 +700,13 @@ public sealed class RabbitQueue
         if (Interlocked.CompareExchange(ref _retryScheduled, 1, 0) != 0)
             return;
 
+        var delayMs = GetAndIncreaseRetryDelay();
+
         _ = Task.Run(async () =>
         {
             try
             {
-                await Task.Delay(1).ConfigureAwait(false);
+                await Task.Delay(delayMs).ConfigureAwait(false);
             }
             finally
             {
@@ -701,6 +715,28 @@ public sealed class RabbitQueue
 
             DrainToConsumers();
         });
+    }
+
+    private static int ResolveRetryDelayMilliseconds(string envName, int fallback)
+    {
+        var raw = Environment.GetEnvironmentVariable(envName);
+        return int.TryParse(raw, out var parsed) && parsed > 0 ? parsed : fallback;
+    }
+
+    private int GetAndIncreaseRetryDelay()
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _retryDelayMs);
+            var next = Math.Min(current * 2, MaxRetryDelayMs);
+            if (Interlocked.CompareExchange(ref _retryDelayMs, next, current) == current)
+                return current;
+        }
+    }
+
+    private void ResetRetryBackoff()
+    {
+        Volatile.Write(ref _retryDelayMs, InitialRetryDelayMs);
     }
 
     private bool HasQueuedMessages()
