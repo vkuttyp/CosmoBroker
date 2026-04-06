@@ -48,7 +48,7 @@ internal class CosmoConnection : IAsyncDisposable
     public bool IsConnected => Volatile.Read(ref _connectedFlag) == 1 && !_cts.IsCancellationRequested;
 
     public Action<CosmoMessage>? OnMessage;
-    public Action? OnDisconnected;
+    public Action<Exception?>? OnDisconnected;
 
     public CosmoConnection(CosmoClientOptions options)
     {
@@ -185,6 +185,7 @@ internal class CosmoConnection : IAsyncDisposable
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+            RememberDisconnect(ex);
             Console.Error.WriteLine($"[CONN] WriteLoop: {ex.Message}");
         }
         finally
@@ -215,12 +216,12 @@ internal class CosmoConnection : IAsyncDisposable
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+            RememberDisconnect(ex);
             Console.Error.WriteLine($"[CONN] ReadLoop: {ex.Message}");
         }
         finally
         {
             HandleDisconnect();
-            OnDisconnected?.Invoke();
         }
     }
 
@@ -515,5 +516,14 @@ internal class CosmoConnection : IAsyncDisposable
 
         while (_pings.TryDequeue(out var pendingPing))
             pendingPing.TrySetException(new IOException("Connection closed."));
+
+        OnDisconnected?.Invoke(_lastDisconnectException);
     }
+
+    private void RememberDisconnect(Exception ex)
+    {
+        Interlocked.CompareExchange(ref _lastDisconnectException, ex, null);
+    }
+
+    private Exception? _lastDisconnectException;
 }

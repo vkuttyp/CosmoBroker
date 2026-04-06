@@ -72,10 +72,13 @@ public class CosmoClient : IAsyncDisposable
         }
     }
 
-    private void HandleDisconnected()
+    private void HandleDisconnected(Exception? exception = null)
     {
         if (Interlocked.Exchange(ref _disconnectNotified, 1) != 0)
             return;
+
+        if (exception != null)
+            Console.Error.WriteLine($"[CosmoClient] Disconnected due to {exception.GetType().Name}: {exception.Message}");
 
         var ex = new IOException("Connection closed.");
 
