@@ -143,6 +143,7 @@ public class BrokerServer : IAsyncDisposable
             _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             _listenSocket.ReceiveBufferSize = 8 * 1024 * 1024; // 8MB buffer
             _listenSocket.SendBufferSize = 8 * 1024 * 1024;    // 8MB buffer
+            _listenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             _listenSocket.Bind(new IPEndPoint(IPAddress.Any, _port));
             _listenSocket.Listen(10000); // Increased from 1000
 
@@ -159,6 +160,7 @@ public class BrokerServer : IAsyncDisposable
             _amqpListenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             _amqpListenSocket.ReceiveBufferSize = 4 * 1024 * 1024;
             _amqpListenSocket.SendBufferSize = 4 * 1024 * 1024;
+            _amqpListenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             _amqpListenSocket.Bind(new IPEndPoint(IPAddress.Any, _amqpPort));
             _amqpListenSocket.Listen(1024);
             Console.WriteLine($"[CosmoBroker] AMQP 0-9-1 listener on port {_amqpPort}...");
@@ -174,6 +176,7 @@ public class BrokerServer : IAsyncDisposable
             _streamListenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             _streamListenSocket.ReceiveBufferSize = 4 * 1024 * 1024;
             _streamListenSocket.SendBufferSize = 4 * 1024 * 1024;
+            _streamListenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             _streamListenSocket.Bind(new IPEndPoint(IPAddress.Any, _streamPort));
             _streamListenSocket.Listen(1024);
             Console.WriteLine($"[CosmoBroker] RabbitMQ Stream listener on port {_streamPort}...");
