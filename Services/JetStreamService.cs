@@ -120,15 +120,22 @@ namespace CosmoBroker.Services
         {
             foreach (var consumer in stream.Consumers)
             {
-                if (SubjectMatchesTokens(consumer.FilterTokens, msg.Subject))
+                try
                 {
-                    if (consumer.IsPull)
+                    if (SubjectMatchesTokens(consumer.FilterTokens, msg.Subject))
                     {
-                        ProcessPullRequests(consumer, stream);
-                        continue;
-                    }
+                        if (consumer.IsPull)
+                        {
+                            ProcessPullRequests(consumer, stream);
+                            continue;
+                        }
 
-                    DeliverMessage(consumer, stream, msg);
+                        DeliverMessage(consumer, stream, msg);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[JetStream] DeliverMessage error for consumer '{consumer?.Name}': {ex.Message}");
                 }
             }
         }
@@ -145,6 +152,7 @@ namespace CosmoBroker.Services
             if (consumer.Config.AckPolicy != AckPolicy.None && consumer.InFlight.Count >= consumer.Config.MaxAckPending)
                 return;
 
+            if (msg.Payload == null) return;
             string ackReply = string.Concat(consumer.AckReplyPrefix, msg.Sequence.ToString());
             _topicTree.PublishWithTTL(consumer.DeliverSubject ?? "", new System.Buffers.ReadOnlySequence<byte>(msg.Payload), ackReply, remainingTtl);
 
