@@ -18,6 +18,9 @@ public class BrokerServer : IAsyncDisposable
     private readonly int _port;
     private readonly int _amqpPort;
     private readonly int _streamPort;
+    public int BoundPort { get; private set; }
+    public int BoundAmqpPort { get; private set; }
+    public int BoundStreamPort { get; private set; }
     private readonly string _streamAdvertisedHost;
     private Socket? _listenSocket;
     private Socket? _amqpListenSocket;
@@ -85,6 +88,34 @@ public class BrokerServer : IAsyncDisposable
         _leafnodes = new Services.LeafnodeManager(this, _topicTree);
         _rmqExchanges = new RabbitMQ.ExchangeManager(_repo);
         RabbitMQ = new RabbitMQ.RabbitMQService(_rmqExchanges);
+
+        // Bind sockets immediately in the constructor so the port is claimed at construction
+        // time, eliminating the TOCTOU race between GetFreePort() and StartAsync().
+        // Pass port=0 to let the OS assign an ephemeral port; read it back via BoundPort.
+        if (_port >= 0)
+        {
+            _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            _listenSocket.ReceiveBufferSize = 8 * 1024 * 1024;
+            _listenSocket.SendBufferSize = 8 * 1024 * 1024;
+            _listenSocket.Bind(new IPEndPoint(IPAddress.Any, _port));
+            BoundPort = ((IPEndPoint)_listenSocket.LocalEndPoint!).Port;
+        }
+        if (_amqpPort > 0)
+        {
+            _amqpListenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            _amqpListenSocket.ReceiveBufferSize = 4 * 1024 * 1024;
+            _amqpListenSocket.SendBufferSize = 4 * 1024 * 1024;
+            _amqpListenSocket.Bind(new IPEndPoint(IPAddress.Any, _amqpPort));
+            BoundAmqpPort = ((IPEndPoint)_amqpListenSocket.LocalEndPoint!).Port;
+        }
+        if (_streamPort > 0)
+        {
+            _streamListenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            _streamListenSocket.ReceiveBufferSize = 4 * 1024 * 1024;
+            _streamListenSocket.SendBufferSize = 4 * 1024 * 1024;
+            _streamListenSocket.Bind(new IPEndPoint(IPAddress.Any, _streamPort));
+            BoundStreamPort = ((IPEndPoint)_streamListenSocket.LocalEndPoint!).Port;
+        }
     }
 
     public void AddPeer(string host, int port)
@@ -138,16 +169,10 @@ public class BrokerServer : IAsyncDisposable
         await _leafnodes.StartAsync(_cts.Token);
         _monitor.Start(_cts.Token);
 
-        if (_port > 0)
+        if (_listenSocket != null)
         {
-            _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            _listenSocket.ReceiveBufferSize = 8 * 1024 * 1024; // 8MB buffer
-            _listenSocket.SendBufferSize = 8 * 1024 * 1024;    // 8MB buffer
-            _listenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            _listenSocket.Bind(new IPEndPoint(IPAddress.Any, _port));
-            _listenSocket.Listen(10000); // Increased from 1000
-
-            Console.WriteLine($"[CosmoBroker] NATS listener on port {_port} {( _serverCertificate != null ? "(TLS enabled)" : "" )}...");
+            _listenSocket.Listen(10000);
+            Console.WriteLine($"[CosmoBroker] NATS listener on port {BoundPort} {( _serverCertificate != null ? "(TLS enabled)" : "" )}...");
             _acceptTask = AcceptLoopAsync(_cts.Token);
         }
         else
@@ -155,15 +180,10 @@ public class BrokerServer : IAsyncDisposable
             Console.WriteLine("[CosmoBroker] NATS listener disabled.");
         }
 
-        if (_amqpPort > 0)
+        if (_amqpListenSocket != null)
         {
-            _amqpListenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            _amqpListenSocket.ReceiveBufferSize = 4 * 1024 * 1024;
-            _amqpListenSocket.SendBufferSize = 4 * 1024 * 1024;
-            _amqpListenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            _amqpListenSocket.Bind(new IPEndPoint(IPAddress.Any, _amqpPort));
             _amqpListenSocket.Listen(1024);
-            Console.WriteLine($"[CosmoBroker] AMQP 0-9-1 listener on port {_amqpPort}...");
+            Console.WriteLine($"[CosmoBroker] AMQP 0-9-1 listener on port {BoundAmqpPort}...");
             _amqpAcceptTask = AcceptAmqpLoopAsync(_cts.Token);
         }
         else
@@ -171,15 +191,10 @@ public class BrokerServer : IAsyncDisposable
             Console.WriteLine("[CosmoBroker] AMQP listener disabled.");
         }
 
-        if (_streamPort > 0)
+        if (_streamListenSocket != null)
         {
-            _streamListenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            _streamListenSocket.ReceiveBufferSize = 4 * 1024 * 1024;
-            _streamListenSocket.SendBufferSize = 4 * 1024 * 1024;
-            _streamListenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            _streamListenSocket.Bind(new IPEndPoint(IPAddress.Any, _streamPort));
             _streamListenSocket.Listen(1024);
-            Console.WriteLine($"[CosmoBroker] RabbitMQ Stream listener on port {_streamPort}...");
+            Console.WriteLine($"[CosmoBroker] RabbitMQ Stream listener on port {BoundStreamPort}...");
             _streamAcceptTask = AcceptStreamLoopAsync(_cts.Token);
         }
         else

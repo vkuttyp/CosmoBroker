@@ -23,9 +23,11 @@ public class TestBase : IAsyncDisposable
     public TestBase(ITestOutputHelper output, Auth.IAuthenticator? auth = null)
     {
         Output = output;
-        Port = GetFreePort();
         MonitorPort = GetFreePort();
-        Server = new BrokerServer(Port, authenticator: auth, monitorPort: MonitorPort);
+        // Pass port=0 so the OS assigns an ephemeral port at construction time, eliminating
+        // the TOCTOU race between GetFreePort() releasing the port and StartAsync() binding it.
+        Server = new BrokerServer(0, authenticator: auth, monitorPort: MonitorPort);
+        Port = Server.BoundPort;
     }
 
     protected static int GetFreePort()
