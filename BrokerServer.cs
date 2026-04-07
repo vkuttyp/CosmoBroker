@@ -89,32 +89,17 @@ public class BrokerServer : IAsyncDisposable
         _rmqExchanges = new RabbitMQ.ExchangeManager(_repo);
         RabbitMQ = new RabbitMQ.RabbitMQService(_rmqExchanges);
 
-        // Bind sockets immediately in the constructor so the port is claimed at construction
-        // time, eliminating the TOCTOU race between GetFreePort() and StartAsync().
-        // Pass port=0 to let the OS assign an ephemeral port; read it back via BoundPort.
-        if (_port >= 0)
+        // When port == 0 the caller wants the OS to assign an ephemeral port.  Bind eagerly
+        // in the constructor so the port is reserved before StartAsync() is called, eliminating
+        // the TOCTOU race that exists when GetFreePort() releases the port before Bind().
+        // Fixed ports (port > 0) are bound inside StartAsync as before.
+        if (_port == 0)
         {
             _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             _listenSocket.ReceiveBufferSize = 8 * 1024 * 1024;
             _listenSocket.SendBufferSize = 8 * 1024 * 1024;
-            _listenSocket.Bind(new IPEndPoint(IPAddress.Any, _port));
+            _listenSocket.Bind(new IPEndPoint(IPAddress.Any, 0));
             BoundPort = ((IPEndPoint)_listenSocket.LocalEndPoint!).Port;
-        }
-        if (_amqpPort > 0)
-        {
-            _amqpListenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            _amqpListenSocket.ReceiveBufferSize = 4 * 1024 * 1024;
-            _amqpListenSocket.SendBufferSize = 4 * 1024 * 1024;
-            _amqpListenSocket.Bind(new IPEndPoint(IPAddress.Any, _amqpPort));
-            BoundAmqpPort = ((IPEndPoint)_amqpListenSocket.LocalEndPoint!).Port;
-        }
-        if (_streamPort > 0)
-        {
-            _streamListenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            _streamListenSocket.ReceiveBufferSize = 4 * 1024 * 1024;
-            _streamListenSocket.SendBufferSize = 4 * 1024 * 1024;
-            _streamListenSocket.Bind(new IPEndPoint(IPAddress.Any, _streamPort));
-            BoundStreamPort = ((IPEndPoint)_streamListenSocket.LocalEndPoint!).Port;
         }
     }
 
@@ -169,6 +154,15 @@ public class BrokerServer : IAsyncDisposable
         await _leafnodes.StartAsync(_cts.Token);
         _monitor.Start(_cts.Token);
 
+        if (_port > 0)
+        {
+            // Fixed port: bind here (original behavior).
+            _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            _listenSocket.ReceiveBufferSize = 8 * 1024 * 1024;
+            _listenSocket.SendBufferSize = 8 * 1024 * 1024;
+            _listenSocket.Bind(new IPEndPoint(IPAddress.Any, _port));
+            BoundPort = _port;
+        }
         if (_listenSocket != null)
         {
             _listenSocket.Listen(10000);
@@ -180,6 +174,14 @@ public class BrokerServer : IAsyncDisposable
             Console.WriteLine("[CosmoBroker] NATS listener disabled.");
         }
 
+        if (_amqpPort > 0)
+        {
+            _amqpListenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            _amqpListenSocket.ReceiveBufferSize = 4 * 1024 * 1024;
+            _amqpListenSocket.SendBufferSize = 4 * 1024 * 1024;
+            _amqpListenSocket.Bind(new IPEndPoint(IPAddress.Any, _amqpPort));
+            BoundAmqpPort = _amqpPort;
+        }
         if (_amqpListenSocket != null)
         {
             _amqpListenSocket.Listen(1024);
@@ -191,6 +193,14 @@ public class BrokerServer : IAsyncDisposable
             Console.WriteLine("[CosmoBroker] AMQP listener disabled.");
         }
 
+        if (_streamPort > 0)
+        {
+            _streamListenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            _streamListenSocket.ReceiveBufferSize = 4 * 1024 * 1024;
+            _streamListenSocket.SendBufferSize = 4 * 1024 * 1024;
+            _streamListenSocket.Bind(new IPEndPoint(IPAddress.Any, _streamPort));
+            BoundStreamPort = _streamPort;
+        }
         if (_streamListenSocket != null)
         {
             _streamListenSocket.Listen(1024);
