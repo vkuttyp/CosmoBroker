@@ -46,6 +46,9 @@ namespace CosmoBroker.JetStream.Models
 
         [System.Text.Json.Serialization.JsonPropertyName("sources")]
         public List<SourceConfig> Sources { get; set; } = new();
+
+        [System.Text.Json.Serialization.JsonPropertyName("deny_subjects")]
+        public List<string> DenySubjects { get; set; } = new();
     }
 
     public class MirrorConfig
@@ -86,10 +89,16 @@ namespace CosmoBroker.JetStream.Models
         // A null entry means ">" (catch-all).
         public readonly string[]?[] SubjectTokens;
 
+        // Pre-parsed tokens for each deny pattern in Config.DenySubjects.
+        public readonly string[]?[] DenySubjectTokens;
+
         public JetStreamEntity(StreamConfig config)
         {
             Config = config;
             SubjectTokens = config.Subjects
+                .Select(s => s == ">" ? null : s.Split('.'))
+                .ToArray();
+            DenySubjectTokens = config.DenySubjects
                 .Select(s => s == ">" ? null : s.Split('.'))
                 .ToArray();
         }

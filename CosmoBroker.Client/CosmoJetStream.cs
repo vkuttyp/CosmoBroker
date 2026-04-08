@@ -85,6 +85,9 @@ public class StreamConfig
     /// <summary>"file" (default) or "memory".</summary>
     [JsonPropertyName("storage")]
     public string Storage { get; set; } = "file";
+
+    [JsonPropertyName("deny_subjects")]
+    public List<string>? DenySubjects { get; set; }
 }
 
 public class JsPubAck

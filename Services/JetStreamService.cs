@@ -91,6 +91,9 @@ namespace CosmoBroker.Services
             if (stream.IsDuplicate(msgId, now))
                 return new JetStreamPublishResult(streamName, stream.LastSequence, Duplicate: true);
 
+            if (IsDenied(stream, subject))
+                return new JetStreamPublishResult(streamName, stream.LastSequence, Duplicate: false);
+
             long sequence = 0;
             if (_repo != null)
             {
@@ -230,6 +233,13 @@ namespace CosmoBroker.Services
 
             consumer.PendingPullRequests.Enqueue((batch, replyTo));
             ProcessPullRequests(consumer, stream);
+        }
+
+        private static bool IsDenied(JetStreamEntity stream, string subject)
+        {
+            foreach (var tokens in stream.DenySubjectTokens)
+                if (SubjectMatchesTokens(tokens, subject)) return true;
+            return false;
         }
 
         // Zero-allocation subject matcher. patternTokens == null means ">" (match all).
